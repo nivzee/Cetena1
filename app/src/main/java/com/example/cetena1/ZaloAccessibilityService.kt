@@ -17,82 +17,84 @@ class ZaloAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
-        Log.e("ZaloTracker", "==========================================")
-        Log.e("ZaloTracker", "✅ SERVICE ĐÃ CHẠY - ĐANG ĐỢI TIN ZALO...")
-        Log.e("ZaloTracker", "==========================================")
+        Log.e("ZaloTracker", "✅ DỊCH VỤ OUTBOUND ĐÃ KẾT NỐI!")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
-        try {
-            val pkg = event.packageName?.toString() ?: ""
-            if (!pkg.contains("zalo")) return
+        val pkg = event.packageName?.toString() ?: ""
+        if (!pkg.contains("zalo")) return
 
+        try {
             when (event.eventType) {
-                AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
-                    val text = event.text.joinToString("")
-                    if (text.isNotBlank()) {
-                        lastCapturedText = text
-                        Log.d("ZaloTracker", "✍️ Đang gõ: $lastCapturedText")
+                // Theo dõi thay đổi văn bản
+                AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED, 
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                    val rootNode = rootInActiveWindow ?: return
+                    val inputText = findInputText(rootNode)
+                    if (inputText.isNotBlank()) {
+                        lastCapturedText = inputText
+                        // Log.d("ZaloTracker", "Captured: $lastCapturedText")
                     }
                 }
+
+                // Khi bạn nhấn Gửi
                 AccessibilityEvent.TYPE_VIEW_CLICKED -> {
+                    Log.d("ZaloTracker", "Phát hiện CLICK trên Zalo")
                     if (lastCapturedText.isNotBlank()) {
-                        Log.e("ZaloTracker", "🚀 Phát hiện bấm GỬI! Nội dung: $lastCapturedText")
                         val rootNode = rootInActiveWindow
                         val name = if (rootNode != null) findContactName(rootNode) else "Người dùng Zalo"
+                        
+                        Log.e("ZaloTracker", "🚀 Gửi tin đi: $lastCapturedText")
                         sendToMessageCenter(name, lastCapturedText)
                         lastCapturedText = "" 
                     }
                 }
             }
         } catch (e: Exception) {
-            Log.e("ZaloTracker", "⚠️ Lỗi xử lý event: ${e.message}")
+            // Log.e("ZaloTracker", "Error: ${e.message}")
         }
     }
 
-    private fun findContactName(rootNode: AccessibilityNodeInfo): String {
-        val ids = arrayOf(
-            "com.zing.zalo:id/chat_title_name", 
-            "com.vng.zalo:id/chat_title_name", 
-            "com.zing.zalo:id/tv_title",
-            "com.zing.zalo:id/name"
-        )
+    private fun findInputText(rootNode: AccessibilityNodeInfo): String {
+        val ids = arrayOf("com.zing.zalo:id/chat_input_field", "com.vng.zalo:id/chat_input_field")
         for (id in ids) {
             val nodes = rootNode.findAccessibilityNodeInfosByViewId(id)
             if (nodes != null && nodes.isNotEmpty()) {
-                val name = nodes[0].text?.toString() ?: ""
-                if (name.isNotBlank()) return name
+                return nodes[0].text?.toString() ?: ""
+            }
+        }
+        return ""
+    }
+
+    private fun findContactName(rootNode: AccessibilityNodeInfo): String {
+        val ids = arrayOf("com.zing.zalo:id/chat_title_name", "com.vng.zalo:id/chat_title_name")
+        for (id in ids) {
+            val nodes = rootNode.findAccessibilityNodeInfosByViewId(id)
+            if (nodes != null && nodes.isNotEmpty()) {
+                return nodes[0].text?.toString() ?: ""
             }
         }
         return "Người dùng Zalo"
     }
 
     private fun sendToMessageCenter(name: String, message: String) {
-        try {
-            val sharedPref = getSharedPreferences("CetenaPrefs", Context.MODE_PRIVATE)
-            val url = sharedPref.getString("server_url", "") ?: ""
+        val sharedPref = getSharedPreferences("CetenaPrefs", Context.MODE_PRIVATE)
+        val url = sharedPref.getString("server_url", "") ?: ""
+        if (url.isBlank()) return
 
-            if (url.isBlank()) {
-                Log.e("ZaloTracker", "❌ CHƯA CÓ URL! Hãy mở App Cetena1 và nhấn LƯU.")
-                return
+        val json = """{"sender": "$name", "message": "$message", "platform": "ZALO", "direction": "OUTBOUND"}"""
+        val body = json.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
+
+        val request = Request.Builder().url(url).post(body).build()
+        client.newCall(request).enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                Log.e("ZaloTracker", "❌ Gửi thất bại: ${e.message}")
             }
-
-            val json = """{"sender": "$name", "message": "$message", "platform": "ZALO", "direction": "OUTBOUND"}"""
-            val body = json.toRequestBody("application/json; charset=utf-8".toMediaTypeOrNull())
-            val request = Request.Builder().url(url).post(body).build()
-
-            client.newCall(request).enqueue(object : Callback {
-                override fun onFailure(call: Call, e: IOException) {
-                    Log.e("ZaloTracker", "❌ LỖI MẠNG: ${e.message} - URL: $url")
-                }
-                override fun onResponse(call: Call, response: Response) {
-                    Log.e("ZaloTracker", "✅ ĐÃ GỬI THÀNH CÔNG OUTBOUND TỚI PC!")
-                    response.close()
-                }
-            })
-        } catch (e: Exception) {
-            Log.e("ZaloTracker", "⚠️ Lỗi gửi tin: ${e.message}")
-        }
+            override fun onResponse(call: Call, response: Response) {
+                Log.e("ZaloTracker", "✅ ĐÃ GỬI THÀNH CÔNG OUTBOUND!")
+                response.close()
+            }
+        })
     }
 
     override fun onInterrupt() {}
