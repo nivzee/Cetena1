@@ -6,11 +6,16 @@ import re
 import datetime
 import threading
 import time
+import logging
 from queue import Queue
+
+# Tắt log truy cập mặc định của Flask để terminal sạch sẽ
+log = logging.getLogger('werkzeug')
+log.setLevel(logging.ERROR)
 
 app = Flask(__name__)
 
-# Thư mục lưu file nhận được từ điện thoại
+# Thư mục lưu file
 UPLOAD_FOLDER = 'zalo_files'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
@@ -24,33 +29,26 @@ DB_CONFIG = {
     "port": "5432"
 }
 
-# Biến toàn cục để ghi nhớ người đang chat
 current_active_contact = "Người dùng Zalo"
 db_queue = Queue()
 
 def db_worker():
-    """Luồng chuyên trách việc ghi vào Database"""
     while True:
         try:
             item = db_queue.get()
             if item is None: break
             data, direction = item
-
             sender_name = data.get('sender', 'Người dùng Zalo')
             message_content = data.get('message', '')
-
             conn = None
             try:
                 conn = psycopg2.connect(**DB_CONFIG)
                 cur = conn.cursor()
-
-                # Chống trùng
                 cur.execute("""
                     SELECT message_id FROM fact_messages
                     WHERE content = %s AND direction = %s
-                    AND created_at > CURRENT_TIMESTAMP - INTERVAL '5 seconds'
+                    AND created_at > CURRENT_TIMESTAMP - INTERVAL '1 second'
                 """, (message_content, direction))
-
                 if not cur.fetchone():
                     cur.execute("SELECT contact_id FROM dim_contacts WHERE full_name = %s", (sender_name,))
                     contact = cur.fetchone()
@@ -58,15 +56,10 @@ def db_worker():
                     if not contact_id:
                         cur.execute("INSERT INTO dim_contacts (full_name) VALUES (%s) RETURNING contact_id", (sender_name,))
                         contact_id = cur.fetchone()[0]
-
-                    cur.execute(
-                        "INSERT INTO fact_messages (contact_id, platform, content, direction, raw_data) VALUES (%s, %s, %s, %s, %s)",
-                        (contact_id, 'ZALO', message_content, direction, Json(data))
-                    )
+                    cur.execute("INSERT INTO fact_messages (contact_id, platform, content, direction, raw_data) VALUES (%s, %s, %s, %s, %s)", (contact_id, 'ZALO', message_content, direction, Json(data)))
                     conn.commit()
                 cur.close()
-            except Exception as e:
-                print(f"❌ Lỗi Database: {e}")
+            except Exception as e: print(f"❌ DB Error: {e}")
             finally:
                 if conn: conn.close()
             db_queue.task_done()
@@ -77,7 +70,7 @@ threading.Thread(target=db_worker, daemon=True).start()
 def get_now():
     return datetime.datetime.now().strftime("%H:%M:%S")
 
-# Giao diện Web Dashboard đơn giản
+# Giao diện Web Dashboard
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html>
@@ -174,14 +167,10 @@ def receive_file():
         sender = request.form.get('sender', current_active_contact)
         clean_name = re.sub(r'^\.trashed-\d+-', '', file.filename).lstrip('.')
         file.save(os.path.join(UPLOAD_FOLDER, clean_name))
-
-        # Lưu vào DB để hiển thị trên Dashboard
         db_queue.put(({"sender": sender, "message": f"[FILE] {clean_name}"}, "INBOUND"))
-
-        print(f"[{get_now()}] 📁 Đã nhận file từ {sender}: {clean_name}")
+        print(f"[{get_now()}] 📁 Nhận file từ {sender}: {clean_name}")
         return jsonify({"status": "success"}), 200
-    except Exception:
-        return jsonify({"status": "error"}), 500
+    except Exception: return jsonify({"status": "error"}), 500
 
 if __name__ == '__main__':
     print("--- DASHBOARD SẴN SÀNG TẠI: http://localhost:5000 ---")
