@@ -13,3 +13,10 @@
 .externalNativeBuild
 .cxx
 local.properties
+
+# Python & Backend
+venv/
+__pycache__/
+*.pyc
+zalo_files/
+.python-version
