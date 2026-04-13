@@ -1,0 +1,41 @@
+# Build and Cache
+.gradle/
+build/
+app/build/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Virtual Environments
+venv/
+app/venv/
+.venv/
+env/
+
+# IDE and System
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+local.properties
+*.iml
+
+# External dependencies and large data
+node_modules/
+app/input_files/*
+!app/input_files/.gitkeep
+
+# Gradle wrappers
+gradle/
+gradlew
+gradlew.bat
+
+# Allow important scripts and source
+!app/scripts/
+!app/src/
+!app/new.sh
+!*.py
+!FINAL_SUMMARY.md
