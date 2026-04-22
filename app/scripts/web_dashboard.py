@@ -20,9 +20,13 @@ def query_db(sql, params=None):
         conn = psycopg2.connect(**DB_CONFIG)
         cur = conn.cursor(cursor_factory=RealDictCursor)
         cur.execute(sql, params)
-        if cur.description: return [dict(row) for row in cur.fetchall()]
-        conn.commit(); return []
+        res = []
+        if cur.description:
+            res = [dict(row) for row in cur.fetchall()]
+        conn.commit() # LUÔN LUÔN COMMIT
+        return res
     except Exception as e:
+        if conn: conn.rollback()
         print(f"DB Error: {e}"); return []
     finally:
         if conn: conn.close()
@@ -62,44 +66,81 @@ def index():
     base_path = f"app/{ent_code}/{dom_code}" if ent_code and dom_code else "app"
 
     if eid and did:
-        # --- SAFE DEEP REDIRECT ---
-        current_level_id = None
-        if sub_parts:
-            temp_p = None
-            for p in sub_parts:
-                res = query_db("SELECT id FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND code = %s AND " + ("parent_id IS NULL" if temp_p is None else f"parent_id = {temp_p}"), [int(eid), int(did), p])
-                if res: temp_p = res[0]['id']
-                else:
-                    temp_p = None
-                    break
-            current_level_id = temp_p
+        e_int, d_int = int(eid), int(did)
+        # 1. ĐỒNG BỘ QUÉT Ổ ĐĨA VÀO DATABASE (Đã sửa lỗi Commit)
+        def sync_disk_to_db(path, p_id=None):
+            if not os.path.exists(path): return
+            for entry in os.scandir(path):
+                if entry.is_dir() and not entry.name.startswith('.'):
+                    # So khớp không phân biệt hoa thường
+                    if p_id is None:
+                        res = query_db("SELECT id FROM dna_structure WHERE UPPER(code) = UPPER(%s) AND parent_id IS NULL AND entity_id = %s AND domain_id = %s", [entry.name, e_int, d_int])
+                    else:
+                        res = query_db("SELECT id FROM dna_structure WHERE UPPER(code) = UPPER(%s) AND parent_id = %s", [entry.name, p_id])
 
-        sql_child = "SELECT code FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND "
-        sql_child += "parent_id IS NULL" if not sub_parts else (f"parent_id = {current_level_id}" if current_level_id else "1=0")
+                    if not res:
+                        res_ins = query_db("INSERT INTO dna_structure (entity_id, domain_id, parent_id, code, name) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+                                         [e_int, d_int, p_id, entry.name, entry.name])
+                        new_id = res_ins[0]['id'] if res_ins else None
+                    else:
+                        new_id = res[0]['id']
 
-        first_child = query_db(sql_child + " ORDER BY sort_order, id LIMIT 1", [int(eid), int(did)])
-        if first_child:
-            new_sid = (sid_path + '/' + first_child[0]['code']) if sid_path else first_child[0]['code']
-            return redirect(url_for('index', u=user['username'], eid=eid, did=did, sid=new_sid))
+                    if new_id: sync_disk_to_db(entry.path, new_id)
 
-        # --- Breadcrumb Logic ---
-        current_rel_path = ""
-        parent_id = None
+        sync_disk_to_db(base_path)
+
+        # 2. PHÂN GIẢI ĐƯỜNG DẪN HIỆN TẠI
+        path_nodes = []
+        curr_id = None
         for part in sub_parts:
-            sql = "SELECT * FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND "
-            sql += "parent_id IS NULL" if parent_id is None else f"parent_id = {parent_id}"
-            siblings = query_db(sql, [int(eid), int(did)])
-            options = [s['code'] for s in siblings]
-            current_rel_path = (f"{current_rel_path}/{part}" if current_rel_path else part).strip('/')
-            this_item = next((s for s in siblings if s['code'] == part), None)
-            if this_item: parent_id = this_item['id']
-            breadcrumb_subs.append({"name": part, "path": current_rel_path, "options": sorted(options)})
+            if curr_id is None:
+                res = query_db("SELECT id, code FROM dna_structure WHERE UPPER(code) = UPPER(%s) AND parent_id IS NULL AND entity_id = %s AND domain_id = %s", [part, e_int, d_int])
+            else:
+                res = query_db("SELECT id, code FROM dna_structure WHERE UPPER(code) = UPPER(%s) AND parent_id = %s", [part, curr_id])
+            if res:
+                curr_id = res[0]['id']
+                path_nodes.append(res[0])
+            else:
+                curr_id = -1; break
 
-        if not sub_parts:
-            next_items = query_db("SELECT code FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND parent_id IS NULL", [int(eid), int(did)])
-        else:
-            next_items = query_db("SELECT code FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND parent_id = %s", [int(eid), int(did), parent_id]) if parent_id else []
-        pending_options = sorted([i['code'] for i in next_items])
+        # 3. WATERFALL REDIRECT: NHẢY ĐẾN ĐÍCH CUỐI CÙNG
+        target_sid = sid_path
+        wf_id = curr_id
+        while True:
+            if wf_id is None:
+                f = query_db("SELECT id, code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s ORDER BY id LIMIT 1", [e_int, d_int])
+            elif wf_id != -1:
+                f = query_db("SELECT id, code FROM dna_structure WHERE parent_id = %s ORDER BY id LIMIT 1", [wf_id])
+            else: f = None
+
+            if f:
+                wf_id = f[0]['id']
+                target_sid = (target_sid + '/' + f[0]['code']).strip('/')
+            else: break
+
+        if target_sid != sid_path:
+            return redirect(url_for('index', u=user['username'], eid=eid, did=did, sid=target_sid))
+
+        # 4. DỰNG BREADCRUMB UI
+        breadcrumb_subs = []
+        acc = ""
+        parent_ids = [None] + [n['id'] for n in path_nodes[:-1]]
+        for i, part in enumerate(sub_parts):
+            p_id = parent_ids[i]
+            if p_id is None:
+                sibs = query_db("SELECT code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s", [e_int, d_int])
+            else:
+                sibs = query_db("SELECT code FROM dna_structure WHERE parent_id = %s", [p_id])
+            acc = (acc + '/' + part) if acc else part
+            breadcrumb_subs.append({"name": part, "path": acc, "options": sorted(list(set([s['code'] for s in sibs])))})
+
+        # 5. LỰA CHỌN TIẾP THEO (PENDING)
+        if curr_id is None:
+            next_items = query_db("SELECT code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s", [e_int, d_int])
+        elif curr_id != -1:
+            next_items = query_db("SELECT code FROM dna_structure WHERE parent_id = %s", [curr_id])
+        else: next_items = []
+        pending_options = sorted(list(set([i['code'] for i in next_items])))
 
     dna = {"prefix": "SYSTEM:", "primary_color": "#00ff00"}
     if eid and did:
@@ -156,11 +197,10 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 .bc-item { display: flex; align-items: center; position: relative; }
 .bc-text { cursor: pointer; color: #fff; font-weight: bold; text-shadow: 0 0 5px rgba(255,255,255,0.2); transition: 0.2s; }
 .bc-text:hover { color: var(--primary); }
-.bc-caret { cursor: pointer; padding: 0 4px; color: #666; font-size: 10px; transition: color 0.2s; }
-.bc-item:hover .bc-caret { color: #fff; }
+.bc-caret { cursor: pointer; padding: 0 8px; color: #666; font-size: 10px; transition: color 0.2s; position: relative; display: flex; align-items: center; height: 100%; }
+.bc-caret:hover { color: #fff; }
 .dropdown { position: absolute; top: 100%; left: 0; background: #111; border: 1px solid #333; min-width: 180px; display: none; z-index:100; box-shadow: 0 10px 30px rgba(0,0,0,0.8); }
-.dropdown::before { content: ''; position: absolute; top: -10px; left: 0; right: 0; height: 10px; }
-.bc-item:hover .dropdown { display: block; }
+.bc-caret:hover .dropdown { display: block; }
 .dropdown div { padding: 10px 15px; font-size: 11px; border-bottom: 1px solid #222; transition: all 0.2s; color: #aaa; display: flex; justify-content: space-between; align-items: center; cursor:pointer; }
 .dropdown div:hover { background: #222; color: #fff; }
 .plus-btn { color: #00ff00; cursor: pointer; font-size: 16px; padding: 0 10px; transition: all 0.3s; font-weight: bold; }
@@ -229,60 +269,64 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
     <div class="bc-item"><span class="bc-text" style="color:#aaa">{{ user.username }}</span><span class="mx-2 text-gray-600 font-bold">@</span></div>
 
     <!-- ENTITY -->
-    <div class="bc-item relative">
+    <div class="bc-item">
         {% if curr_ent.code %}
             <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}'">{{ curr_ent.code }}</span>
-            <span class="bc-caret">▼</span>
+            <div class="bc-caret">▼
+                <div class="dropdown">
+                    {% for ent in entities %}
+                        <div class="group flex justify-between items-center {% if ent.code == curr_ent.code %}bg-gray-900/50{% endif %}">
+                            <span class="flex-grow {% if ent.code == curr_ent.code %}text-white font-bold{% endif %}" onclick="location.href='/?u={{user.username}}&eid={{ent.id}}'">{{ ent.code }}</span>
+                            {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('entity', '{{ent.id}}', '{{ent.code}}')"></i>{% endif %}
+                        </div>
+                    {% endfor %}
+                    {% if is_sa %}<div class="text-green-500 font-bold border-t border-gray-800" onclick="openPanel('entity', '')">+ NEW ENTITY</div>{% endif %}
+                </div>
+            </div>
         {% else %}
             <span class="plus-btn" onclick="openPanel('entity', '')">+</span>
         {% endif %}
-        <div class="dropdown">
-            {% for ent in entities %}
-                <div class="group flex justify-between items-center">
-                    <span class="flex-grow" onclick="location.href='/?u={{user.username}}&eid={{ent.id}}'">{{ ent.code }}</span>
-                    {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('entity', '{{ent.id}}', '{{ent.code}}')"></i>{% endif %}
-                </div>
-            {% endfor %}
-            {% if is_sa %}<div class="text-green-500 font-bold" onclick="openPanel('entity', '')">+ NEW ENTITY</div>{% endif %}
-        </div>
     </div>
 
     {% if curr_ent.code %}
     <span class="mx-2 text-gray-600 font-bold">/</span>
-    <div class="bc-item relative">
+    <div class="bc-item">
         {% if curr_dom.code %}
             <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}'">{{ curr_dom.code }}</span>
-            <span class="bc-caret">▼</span>
+            <div class="bc-caret">▼
+                <div class="dropdown">
+                    {% for dom in domains %}
+                        <div class="group flex justify-between items-center {% if dom.code == curr_dom.code %}bg-gray-900/50{% endif %}">
+                            <span class="flex-grow {% if dom.code == curr_dom.code %}text-white font-bold{% endif %}" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{dom.id}}'">{{ dom.code }}</span>
+                            {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('domain', '{{dom.id}}', '{{dom.code}}')"></i>{% endif %}
+                        </div>
+                    {% endfor %}
+                    {% if is_sa %}<div class="text-green-500 font-bold border-t border-gray-800" onclick="openPanel('domain', '')">+ NEW DOMAIN</div>{% endif %}
+                </div>
+            </div>
         {% else %}
             <span class="plus-btn" onclick="openPanel('domain', '')">+</span>
         {% endif %}
-        <div class="dropdown">
-            {% for dom in domains %}
-                <div class="group flex justify-between items-center">
-                    <span class="flex-grow" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{dom.id}}'">{{ dom.code }}</span>
-                    {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('domain', '{{dom.id}}', '{{dom.code}}')"></i>{% endif %}
-                </div>
-            {% endfor %}
-            {% if is_sa %}<div class="text-green-500 font-bold" onclick="openPanel('domain', '')">+ NEW DOMAIN</div>{% endif %}
-        </div>
     </div>
 
     {% if curr_dom.code %}
         <!-- RECURSIVE SUBS -->
         {% for sub in breadcrumb_subs %}
         <span class="mx-2 text-gray-600 font-bold">/</span>
-        <div class="bc-item relative">
-            <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ sub.path }}'">{{ sub.name }}</span><span class="bc-caret">▼</span>
-            <div class="dropdown">
-                {% for opt in sub.options %}
-                    {% set parts = sub.path.split('/')[:-1] %}
-                    {% set new_sid = (parts + [opt])|join('/') if parts else opt %}
-                    <div class="group flex justify-between items-center">
-                        <span class="flex-grow" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ new_sid }}'">{{ opt }}</span>
-                        {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('sub', '{{ new_sid }}', '{{ opt }}')"></i>{% endif %}
-                    </div>
-                {% endfor %}
-                {% if is_sa %}<div class="text-green-500 font-bold" onclick="openPanel('sub', '{{ '/'.join(sub.path.split('/')[:-1]) }}')">+ NEW SIBLING</div>{% endif %}
+        <div class="bc-item">
+            <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ sub.path }}'">{{ sub.name }}</span>
+            <div class="bc-caret">▼
+                <div class="dropdown">
+                    {% for opt in sub.options %}
+                        {% set parts = sub.path.split('/')[:-1] %}
+                        {% set opt_sid = (parts + [opt])|join('/') if parts else opt %}
+                        <div class="group flex justify-between items-center {% if opt == sub.name %}bg-gray-900/50{% endif %}">
+                            <span class="flex-grow {% if opt == sub.name %}text-white font-bold{% endif %}" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ opt_sid }}'">{{ opt }}</span>
+                            {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('sub', '{{ opt_sid }}', '{{ opt }}')"></i>{% endif %}
+                        </div>
+                    {% endfor %}
+                    {% if is_sa %}<div class="text-green-500 font-bold border-t border-gray-800" onclick="openPanel('sub', '{{ '/'.join(sub.path.split('/')[:-1]) }}')">+ NEW SIBLING</div>{% endif %}
+                </div>
             </div>
         </div>
         {% endfor %}
@@ -490,7 +534,25 @@ def initialize_dna():
                 dom_res = query_db("SELECT code FROM domains WHERE id = %s", [int(pdid)])
                 if not dom_res: return jsonify({"success": False, "message": "Domain not found in DB"})
                 dom_code = dom_res[0]['code']
-                # Path: app/ENT/DOM/SUB1/SUB2/NEW
+
+                # 1. Tìm parent_id cho bản ghi mới
+                parent_id = None
+                if psid:
+                    parts = [p for p in psid.split('/') if p]
+                    curr = None
+                    for p in parts:
+                        if curr is None:
+                            r = query_db("SELECT id FROM dna_structure WHERE code = %s AND parent_id IS NULL AND entity_id = %s AND domain_id = %s", [p, int(peid), int(pdid)])
+                        else:
+                            r = query_db("SELECT id FROM dna_structure WHERE code = %s AND parent_id = %s", [p, curr])
+                        if r: curr = r[0]['id']
+                    parent_id = curr
+
+                # 2. Insert vào Database (BẮT BUỘC ĐỂ REDIRECT CHẠY)
+                query_db("INSERT INTO dna_structure (entity_id, domain_id, parent_id, code, name) VALUES (%s, %s, %s, %s, %s)",
+                         [int(peid), int(pdid), parent_id, code, data.get('name') or code])
+
+                # 3. Tạo thư mục vật lý
                 path = os.path.join(f"app/{ent_code}/{dom_code}", psid, code)
                 os.makedirs(path, exist_ok=True); create_template(path, code)
         return jsonify({"success": True})
