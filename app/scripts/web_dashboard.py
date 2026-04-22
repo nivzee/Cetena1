@@ -1,4 +1,4 @@
-import os, json, shutil
+import os, json, shutil, subprocess
 from flask import Flask, render_template_string, jsonify, request, redirect, url_for
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -185,6 +185,7 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 .shortcut-slot.active { background: var(--primary); border-color: var(--primary); box-shadow: 0 0 8px var(--primary); }
 #factory-panel, #shortcut-panel { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:#111; border:1px solid #333; padding:20px; z-index:1000; width:400px; box-shadow: 0 0 50px rgba(0,0,0,1); }
 .overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:999; }
+.hidden { display: none !important; }
 </style></head>
 <body class="p-10">
 <!-- DEBUG INFO (Hidden unless SA) -->
@@ -206,8 +207,26 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
             <input id="f-code" class="bg-black border border-gray-800 p-2 w-full text-xs text-white outline-none focus:border-green-500" placeholder="e.g. 2026">
         </div>
         <div class="flex items-center gap-2 py-2">
-            <input type="checkbox" id="f-template" class="accent-green-500 w-3 h-3">
+            <input type="checkbox" id="f-template" class="accent-green-500 w-3 h-3" onchange="toggleTemplatePanel()">
             <label for="f-template" class="text-[9px] text-gray-400 uppercase cursor-pointer">Apply Standard DNA Template (temp, script...)</label>
+        </div>
+
+        <!-- Template Config Panel (Hidden by default) -->
+        <div id="template-config" class="hidden space-y-3 border-l-2 border-green-900 pl-4 py-2 bg-black/50">
+            <div>
+                <label class="text-[7px] text-gray-500 uppercase">Path for Template File/Folder</label>
+                <div class="flex gap-2">
+                    <input id="f-path-temp" class="bg-transparent border border-gray-800 p-1 w-full text-[10px] text-gray-300 outline-none" placeholder="/path/to/source/template">
+                    <span class="cursor-pointer text-gray-500 hover:text-white" onclick="browsePath('f-path-temp')"><i class="fas fa-folder-open"></i></span>
+                </div>
+            </div>
+            <div>
+                <label class="text-[7px] text-gray-500 uppercase">Path for Script File/Folder</label>
+                <div class="flex gap-2">
+                    <input id="f-path-script" class="bg-transparent border border-gray-800 p-1 w-full text-[10px] text-gray-300 outline-none" placeholder="/path/to/source/script">
+                    <span class="cursor-pointer text-gray-500 hover:text-white" onclick="browsePath('f-path-script')"><i class="fas fa-folder-open"></i></span>
+                </div>
+            </div>
         </div>
     </div>
     <div class="flex justify-end gap-2 mt-6">
@@ -306,6 +325,19 @@ function openPanel(level, pSid) {
 }
 function closePanel() { document.getElementById('factory-panel').style.display = 'none'; document.querySelector('.overlay').style.display = 'none'; }
 
+function toggleTemplatePanel() {
+    const isChecked = document.getElementById('f-template').checked;
+    document.getElementById('template-config').classList.toggle('hidden', !isChecked);
+}
+
+function browsePath(targetId) {
+    fetch('/browse_path', { method: 'POST' })
+    .then(res => res.json())
+    .then(data => {
+        if(data.path) document.getElementById(targetId).value = data.path;
+    });
+}
+
 function submitFactory() {
     const code = document.getElementById('f-code').value.trim().toUpperCase();
     if(!code) return alert('System Code (Folder ID) is required');
@@ -317,7 +349,9 @@ function submitFactory() {
         parent_eid: '{{ eid or "" }}',
         parent_did: '{{ did or "" }}',
         parent_sid: factoryParentSid,
-        use_template: document.getElementById('f-template').checked
+        use_template: document.getElementById('f-template').checked,
+        src_temp: document.getElementById('f-path-temp').value.trim(),
+        src_script: document.getElementById('f-path-script').value.trim()
     };
 
     fetch('/initialize_dna', {
@@ -384,17 +418,57 @@ function deleteItem(level, id, code) {
 </script>
 </body></html>""", shortcuts=shortcuts, eid=eid, did=did, sid_path=sid_path, breadcrumb_subs=breadcrumb_subs, entities=entities, domains=domains, user=user, is_sa=is_sa, dna=dna, shortcut_json=shortcut_json, curr_ent=curr_ent, curr_dom=curr_dom, sub_parts=sub_parts, pending_options=pending_options, base_path=base_path)
 
+@app.route('/browse_path', methods=['POST'])
+def browse_path():
+    try:
+        # Lấy môi trường hiện tại của hệ thống để truyền cho Zenity
+        env = os.environ.copy()
+        # Đảm bảo DISPLAY được thiết lập (thường là :0)
+        if "DISPLAY" not in env: env["DISPLAY"] = ":0"
+
+        # Gọi zenity để chọn file hoặc thư mục
+        # Bỏ --directory để cho phép chọn file
+        cmd = ['zenity', '--file-selection', '--title=Select Source File or Folder']
+        path = subprocess.check_output(cmd, env=env, text=True).strip()
+        return jsonify({"path": path})
+    except subprocess.CalledProcessError:
+        # Người dùng nhấn Cancel
+        return jsonify({"path": ""})
+    except Exception as e:
+        print(f"Zenity Error: {e}")
+        return jsonify({"path": ""})
+
 @app.route('/initialize_dna', methods=['POST'])
 def initialize_dna():
     data = request.json
     level, code = data.get('level'), data.get('code').upper()
     peid, pdid, psid = data.get('parent_eid'), data.get('parent_did'), data.get('parent_sid', '')
     use_template = data.get('use_template', False)
+    src_temp = data.get('src_temp')
+    src_script = data.get('src_script')
 
     def create_template(base_path, folder_name):
         if use_template:
-            for f in [f"{folder_name.lower()}_temp", f"{folder_name.lower()}_standardized", "script", "processed"]:
-                os.makedirs(os.path.join(base_path, f), exist_ok=True)
+            # Create standard subfolders
+            temp_dir = os.path.join(base_path, f"{folder_name.lower()}_temp")
+            script_dir = os.path.join(base_path, "script")
+            os.makedirs(temp_dir, exist_ok=True)
+            os.makedirs(script_dir, exist_ok=True)
+            os.makedirs(os.path.join(base_path, f"{folder_name.lower()}_standardized"), exist_ok=True)
+            os.makedirs(os.path.join(base_path, "processed"), exist_ok=True)
+
+            # Copy source files if provided
+            if src_temp and os.path.exists(src_temp):
+                if os.path.isdir(src_temp):
+                    shutil.copytree(src_temp, temp_dir, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src_temp, temp_dir)
+
+            if src_script and os.path.exists(src_script):
+                if os.path.isdir(src_script):
+                    shutil.copytree(src_script, script_dir, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src_script, script_dir)
 
     try:
         if level == 'entity':
