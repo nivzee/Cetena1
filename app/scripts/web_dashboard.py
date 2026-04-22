@@ -43,7 +43,7 @@ def index():
     entities = query_db("SELECT id, name, code FROM entities ORDER BY id")
     eid = request.args.get('eid')
     if not eid and entities: eid = str(entities[0]['id'])
-    curr_ent = next((e for e in entities if str(e['id']) == str(eid)), {})
+    curr_ent = next((e for e in entities if str(e['id']) == str(eid)), {}) if eid else {}
     ent_code = curr_ent.get('code', '')
 
     # 2. Domains
@@ -51,69 +51,55 @@ def index():
     if eid: domains = query_db("SELECT d.id, d.name, d.code FROM domains d JOIN dna_kernel k ON d.id = k.domain_id WHERE k.entity_id = %s ORDER BY d.id", [eid])
     did = request.args.get('did')
     if not did and domains: did = str(domains[0]['id'])
-    curr_dom = next((d for d in domains if str(d['id']) == str(did)), {})
+    curr_dom = next((d for d in domains if str(d['id']) == str(did)), {}) if did else {}
     dom_code = curr_dom.get('code', '')
 
     # 3. Breadcrumb & Menu Logic (DB-BASED)
     sid_path = request.args.get('sid', '').strip('/')
     sub_parts = [p for p in sid_path.split('/') if p]
-
-    # --- SAFE DEEP REDIRECT ---
-    # Find current level's ID to check for children
-    current_level_id = None
-    if sub_parts:
-        temp_p = None
-        for p in sub_parts:
-            res = query_db("SELECT id FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND code = %s AND " + ("parent_id IS NULL" if temp_p is None else f"parent_id = {temp_p}"), [int(eid), int(did), p])
-            if res: temp_p = res[0]['id']
-            else:
-                temp_p = None
-                break
-        current_level_id = temp_p
-
-    # Look for the first child of this level
-    sql_child = "SELECT code FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND "
-    sql_child += "parent_id IS NULL" if not sub_parts else (f"parent_id = {current_level_id}" if current_level_id else "1=0")
-
-    first_child = query_db(sql_child + " ORDER BY sort_order, id LIMIT 1", [int(eid), int(did)])
-    if first_child:
-        new_sid = (sid_path + '/' + first_child[0]['code']) if sid_path else first_child[0]['code']
-        return redirect(url_for('index', u=user['username'], eid=eid, did=did, sid=new_sid))
-
     breadcrumb_subs = []
+    pending_options = []
     base_path = f"app/{ent_code}/{dom_code}" if ent_code and dom_code else "app"
 
-    EXCLUDE_DIRS = ['script', 'processed']
-    current_rel_path = ""
-    parent_id = None # Root of domain
+    if eid and did:
+        # --- SAFE DEEP REDIRECT ---
+        current_level_id = None
+        if sub_parts:
+            temp_p = None
+            for p in sub_parts:
+                res = query_db("SELECT id FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND code = %s AND " + ("parent_id IS NULL" if temp_p is None else f"parent_id = {temp_p}"), [int(eid), int(did), p])
+                if res: temp_p = res[0]['id']
+                else:
+                    temp_p = None
+                    break
+            current_level_id = temp_p
 
-    for part in sub_parts:
-        # Get options (siblings) from DB
-        sql = "SELECT * FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND "
-        sql += "parent_id IS NULL" if parent_id is None else f"parent_id = {parent_id}"
-        siblings = query_db(sql, [int(eid), int(did)])
-        options = [s['code'] for s in siblings]
+        sql_child = "SELECT code FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND "
+        sql_child += "parent_id IS NULL" if not sub_parts else (f"parent_id = {current_level_id}" if current_level_id else "1=0")
 
-        # update current path
-        current_rel_path = (f"{current_rel_path}/{part}" if current_rel_path else part).strip('/')
+        first_child = query_db(sql_child + " ORDER BY sort_order, id LIMIT 1", [int(eid), int(did)])
+        if first_child:
+            new_sid = (sid_path + '/' + first_child[0]['code']) if sid_path else first_child[0]['code']
+            return redirect(url_for('index', u=user['username'], eid=eid, did=did, sid=new_sid))
 
-        # Find this part in DB to get its ID for next level
-        this_item = next((s for s in siblings if s['code'] == part), None)
-        if this_item: parent_id = this_item['id']
+        # --- Breadcrumb Logic ---
+        current_rel_path = ""
+        parent_id = None
+        for part in sub_parts:
+            sql = "SELECT * FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND "
+            sql += "parent_id IS NULL" if parent_id is None else f"parent_id = {parent_id}"
+            siblings = query_db(sql, [int(eid), int(did)])
+            options = [s['code'] for s in siblings]
+            current_rel_path = (f"{current_rel_path}/{part}" if current_rel_path else part).strip('/')
+            this_item = next((s for s in siblings if s['code'] == part), None)
+            if this_item: parent_id = this_item['id']
+            breadcrumb_subs.append({"name": part, "path": current_rel_path, "options": sorted(options)})
 
-        breadcrumb_subs.append({
-            "name": part,
-            "path": current_rel_path,
-            "options": sorted(options)
-        })
-
-    # Get options for the "Next" segment
-    if not sub_parts:
-        next_items = query_db("SELECT code FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND parent_id IS NULL", [int(eid), int(did)])
-    else:
-        next_items = query_db("SELECT code FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND parent_id = %s", [int(eid), int(did), parent_id]) if parent_id else []
-
-    pending_options = sorted([i['code'] for i in next_items])
+        if not sub_parts:
+            next_items = query_db("SELECT code FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND parent_id IS NULL", [int(eid), int(did)])
+        else:
+            next_items = query_db("SELECT code FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND parent_id = %s", [int(eid), int(did), parent_id]) if parent_id else []
+        pending_options = sorted([i['code'] for i in next_items])
 
     dna = {"prefix": "SYSTEM:", "primary_color": "#00ff00"}
     if eid and did:
@@ -244,7 +230,12 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 
     <!-- ENTITY -->
     <div class="bc-item relative">
-        <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}'">{{ curr_ent.code or '---' }}</span><span class="bc-caret">▼</span>
+        {% if curr_ent.code %}
+            <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}'">{{ curr_ent.code }}</span>
+            <span class="bc-caret">▼</span>
+        {% else %}
+            <span class="plus-btn" onclick="openPanel('entity', '')">+</span>
+        {% endif %}
         <div class="dropdown">
             {% for ent in entities %}
                 <div class="group flex justify-between items-center">
@@ -259,7 +250,12 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
     {% if curr_ent.code %}
     <span class="mx-2 text-gray-600 font-bold">/</span>
     <div class="bc-item relative">
-        <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}'">{{ curr_dom.code or '---' }}</span><span class="bc-caret">▼</span>
+        {% if curr_dom.code %}
+            <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}'">{{ curr_dom.code }}</span>
+            <span class="bc-caret">▼</span>
+        {% else %}
+            <span class="plus-btn" onclick="openPanel('domain', '')">+</span>
+        {% endif %}
         <div class="dropdown">
             {% for dom in domains %}
                 <div class="group flex justify-between items-center">
@@ -270,29 +266,31 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
             {% if is_sa %}<div class="text-green-500 font-bold" onclick="openPanel('domain', '')">+ NEW DOMAIN</div>{% endif %}
         </div>
     </div>
-    {% endif %}
 
-    <!-- RECURSIVE SUBS -->
-    {% for sub in breadcrumb_subs %}
-    <span class="mx-2 text-gray-600 font-bold">/</span>
-    <div class="bc-item relative">
-        <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ sub.path }}'">{{ sub.name }}</span><span class="bc-caret">▼</span>
-        <div class="dropdown">
-            {% for opt in sub.options %}
-                {% set parts = sub.path.split('/')[:-1] %}
-                {% set new_sid = (parts + [opt])|join('/') if parts else opt %}
-                <div class="group flex justify-between items-center">
-                    <span class="flex-grow" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ new_sid }}'">{{ opt }}</span>
-                    {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('sub', '{{ new_sid }}', '{{ opt }}')"></i>{% endif %}
-                </div>
-            {% endfor %}
-            {% if is_sa %}<div class="text-green-500 font-bold" onclick="openPanel('sub', '{{ '/'.join(sub.path.split('/')[:-1]) }}')">+ NEW SIBLING</div>{% endif %}
+    {% if curr_dom.code %}
+        <!-- RECURSIVE SUBS -->
+        {% for sub in breadcrumb_subs %}
+        <span class="mx-2 text-gray-600 font-bold">/</span>
+        <div class="bc-item relative">
+            <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ sub.path }}'">{{ sub.name }}</span><span class="bc-caret">▼</span>
+            <div class="dropdown">
+                {% for opt in sub.options %}
+                    {% set parts = sub.path.split('/')[:-1] %}
+                    {% set new_sid = (parts + [opt])|join('/') if parts else opt %}
+                    <div class="group flex justify-between items-center">
+                        <span class="flex-grow" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ new_sid }}'">{{ opt }}</span>
+                        {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('sub', '{{ new_sid }}', '{{ opt }}')"></i>{% endif %}
+                    </div>
+                {% endfor %}
+                {% if is_sa %}<div class="text-green-500 font-bold" onclick="openPanel('sub', '{{ '/'.join(sub.path.split('/')[:-1]) }}')">+ NEW SIBLING</div>{% endif %}
+            </div>
         </div>
-    </div>
-    {% endfor %}
+        {% endfor %}
 
-    <span class="mx-2 text-gray-600 font-bold">/</span>
-    {% if is_sa %}<span class="plus-btn" title="Create New Child" onclick="openPanel('sub', '{{ sid_path }}')">+</span>{% endif %}
+        <span class="mx-2 text-gray-600 font-bold">/</span>
+        {% if is_sa %}<span class="plus-btn" title="Create New Child" onclick="openPanel('sub', '{{ sid_path }}')">+</span>{% endif %}
+    {% endif %}
+    {% endif %}
 
     <div class="ml-6 flex items-center gap-2">
         <span class="symbol-btn">:::</span>
