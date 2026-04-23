@@ -64,6 +64,8 @@ def index():
     sub_parts = [p for p in sid_path.split('/') if p]
     breadcrumb_subs = []
     pending_options = []
+    path_nodes = []
+    curr_id = None
     base_path = f"app/{ent_code}/{dom_code}" if ent_code and dom_code else "app"
 
     if eid and did:
@@ -128,11 +130,18 @@ def index():
     # 4. DỰNG BREADCRUMB UI
     breadcrumb_subs = []
     acc = ""
-    parent_ids = [None] + [n['id'] for n in path_nodes[:-1]]
+    # Tránh lỗi khi path_nodes trống (trường hợp Entity mới chưa có Domain/Structure)
+    parent_ids = [None] + [n['id'] for n in path_nodes[:-1]] if path_nodes else [None]
     for i, part in enumerate(sub_parts):
+        if i >= len(parent_ids): break # Safety break
         p_id = parent_ids[i]
+
+        # Đảm bảo e_int và d_int tồn tại trước khi query
+        if not eid or not did: break
+        e_int_val, d_int_val = int(eid), int(did)
+
         if p_id is None:
-            sibs = query_db("SELECT code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s", [e_int, d_int])
+            sibs = query_db("SELECT code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s", [e_int_val, d_int_val])
         else:
             sibs = query_db("SELECT code FROM dna_structure WHERE parent_id = %s", [p_id])
         acc = (acc + '/' + part) if acc else part
@@ -159,11 +168,13 @@ def index():
     has_dom_reified = os.path.exists(os.path.join(f"app/{ent_code}/DNA/{dom_code}", "Script")) if (ent_code and dom_code) else False
 
     # 5. LỰA CHỌN TIẾP THEO (PENDING)
-    if curr_id is None:
-        next_items = query_db("SELECT code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s", [e_int, d_int])
-    elif curr_id != -1:
-        next_items = query_db("SELECT code FROM dna_structure WHERE parent_id = %s", [curr_id])
-    else: next_items = []
+    next_items = []
+    if eid and did:
+        e_int_val, d_int_val = int(eid), int(did)
+        if curr_id is None:
+            next_items = query_db("SELECT code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s", [e_int_val, d_int_val])
+        elif curr_id != -1:
+            next_items = query_db("SELECT code FROM dna_structure WHERE parent_id = %s", [curr_id])
     pending_options = sorted(list(set([i['code'] for i in next_items])))
 
     # 6. DNA ORGANS & FILE LISTING
