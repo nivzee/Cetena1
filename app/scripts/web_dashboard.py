@@ -129,11 +129,19 @@ def index():
             else:
                 curr_id = -1; break
 
-        # 3. WATERFALL REDIRECT: NHẢY ĐẾN ĐÍCH CUỐI CÙNG
+        # FIX: Nếu đường dẫn (sid) không tồn tại trong Domain này, reset về gốc để tránh "ghost path" từ domain cũ
+        if curr_id == -1:
+            sid_path = ""
+            curr_id = None
+            path_nodes = []
+            sub_parts = []
+
+        # 3. WATERFALL REDIRECT: Điều khiển qua tham số 'wf'
         target_sid = sid_path
-        wf_id = curr_id
-        # Skip waterfall if in DNA mode or organ is selected
-        if mode != 'dna' and not request.args.get('organ'):
+        wf_enabled = request.args.get('wf', '0') == '1' # Mặc định là OFF (0)
+
+        if wf_enabled and mode != 'dna' and not request.args.get('organ'):
+            wf_id = curr_id
             while True:
                 if wf_id is None:
                     f = query_db("SELECT id, code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s ORDER BY id LIMIT 1", [e_int, d_int])
@@ -147,7 +155,7 @@ def index():
                 else: break
 
         if target_sid != sid_path:
-            return redirect(url_for('index', u=user['username'], eid=eid, did=did, sid=target_sid, mode=mode, organ=request.args.get('organ')))
+            return redirect(url_for('index', u=user['username'], eid=eid, did=did, sid=target_sid, mode=mode, organ=request.args.get('organ'), wf='1'))
 
     # 4. DỰNG BREADCRUMB UI
     breadcrumb_subs = []
@@ -307,79 +315,13 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 .symbol-btn:hover { color: #fff; transform: scale(1.2); }
 .shortcut-slot { width: 12px; height: 12px; border: 1px solid #555; cursor: pointer; transition: 0.2s; }
 .shortcut-slot.active { background: var(--primary); border-color: var(--primary); box-shadow: 0 0 8px var(--primary); }
-#factory-panel, #shortcut-panel { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:#111; border:1px solid #333; padding:20px; z-index:1000; width:400px; box-shadow: 0 0 50px rgba(0,0,0,1); }
+#factory-panel, #shortcut-panel, #settings-panel { display:none; position:fixed; top:50%; left:50%; transform:translate(-50%, -50%); background:#111; border:1px solid #333; padding:20px; z-index:1000; width:400px; box-shadow: 0 0 50px rgba(0,0,0,1); }
 .overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:999; }
 .hidden { display: none !important; }
 </style></head>
 <body class="p-10">
 <!-- NOTIFICATION TOAST -->
 <div id="toast-container" class="fixed top-5 right-5 z-[2000] space-y-2"></div>
-
-<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-<script>
-    // Tự động nhận diện địa chỉ server đang chạy
-    const socket = io(window.location.origin, {
-        transports: ['websocket', 'polling'],
-        upgrade: true,
-        reconnection: true
-    });
-
-    socket.on('connect', () => {
-        console.log("✅ Connected to Cet Core");
-        showToast("System Connected! 🚀");
-    });
-
-    socket.on('connect_error', (err) => {
-        console.error("❌ Connection Error:", err);
-    });
-
-    socket.on('dashboard_notify', function(data) {
-        console.log("🔔 Event Received:", data);
-        if (data && data.message) {
-            showToast(data.message);
-            // Hiệu ứng đổi màu nền trang web chớp nhoáng để chú biết chắc chắn là có tin
-            document.body.style.backgroundColor = '#051505';
-            setTimeout(() => { document.body.style.backgroundColor = '#080808'; }, 500);
-        }
-    });
-
-    function showToast(msg) {
-        const container = document.getElementById('toast-container');
-        if (!container) return;
-
-        const toast = document.createElement('div');
-        // Làm Toast to hơn và có hiệu ứng đổ bóng mạnh
-        toast.className = "bg-green-600 text-white text-[14px] px-8 py-5 rounded-lg shadow-[0_0_50px_rgba(0,255,0,0.6)] animate-bounce flex items-center gap-5 min-w-[350px] border-2 border-white";
-        toast.style.position = "fixed";
-        toast.style.top = "20px";
-        toast.style.right = "20px";
-        toast.style.zIndex = "99999";
-
-        toast.innerHTML = `
-            <i class="fas fa-bell-on fa-spin text-2xl"></i>
-            <div class="flex flex-col">
-                <span class="font-black text-white uppercase text-[12px] tracking-widest">🚨 DNA ALERT</span>
-                <span class="font-bold">${msg}</span>
-            </div>
-        `;
-
-        container.appendChild(toast);
-        console.log("Toast should be visible now!");
-
-        setTimeout(() => {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateX(100px)';
-            toast.style.transition = 'all 0.8s';
-            setTimeout(() => toast.remove(), 800);
-        }, 6000);
-    }
-</script>
-<!-- DEBUG INFO (Hidden unless SA) -->
-{% if is_sa %}
-<div class="text-[8px] text-gray-700 mb-2 p-2 border border-gray-900">
-    DEBUG: EID={{eid}} | DID={{did}} | SID_PATH={{sid_path}} | BASE_PATH={{base_path}} | SUB_PARTS={{sub_parts}} | SUBS_COUNT={{breadcrumb_subs|length}} | PENDING={{pending_options|length}}
-</div>
-{% endif %}
 <div id="factory-panel">
     <div id="panel-title" class="text-[10px] text-green-500 mb-4 tracking-widest uppercase text-center">Factory: Initialize DNA</div>
     <div class="mb-4 text-[9px] text-gray-500 uppercase text-center border-b border-gray-800 pb-2">Target: <span id="factory-context" class="text-white">---</span></div>
@@ -421,7 +363,27 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
     </div>
 </div>
 
-<div class="overlay" onclick="closePanel(); closeShortcut();"></div>
+<div id="settings-panel">
+    <div class="text-[10px] text-blue-500 mb-4 tracking-widest uppercase text-center">System Settings</div>
+    <div class="space-y-4">
+        <div class="flex justify-between items-center bg-black/50 p-3 border border-gray-800">
+            <div class="flex flex-col">
+                <span class="text-[10px] text-white font-bold uppercase">Waterfall Redirect</span>
+                <span class="text-[8px] text-gray-500">Auto-jump to first child directory</span>
+            </div>
+            {% set is_wf = request.args.get('wf') == '1' %}
+            <div class="cursor-pointer text-2xl" onclick="toggleWaterfall()">
+                <i class="fas {{ 'fa-toggle-on text-green-500' if is_wf else 'fa-toggle-off text-gray-700' }}"></i>
+            </div>
+        </div>
+        <div class="text-[8px] text-gray-600 italic px-1">Note: This setting is preserved in the URL for this session.</div>
+    </div>
+    <div class="flex justify-end mt-6">
+        <button onclick="closeSettings()" class="text-[9px] uppercase bg-gray-900 px-6 py-2 text-white hover:bg-gray-800">Close</button>
+    </div>
+</div>
+
+<div class="overlay" onclick="closePanel(); closeShortcut(); closeSettings();"></div>
 
 <!-- BREADCRUMB -->
 <div class="flex justify-between border-b border-gray-800 pb-5 mb-10">
@@ -590,7 +552,7 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
     {% endif %}
 
     <div class="ml-6 flex items-center gap-2">
-        <span class="symbol-btn" onclick="console.log('🔔 Sending test...'); socket.emit('test_trigger', {test: true})" title="Test Notification"><i class="fas fa-bell text-yellow-500"></i></span>
+        <span class="symbol-btn" onclick="openSettings()" title="Settings"><i class="fas fa-asterisk text-blue-400"></i></span>
         <span class="symbol-btn">:::</span>
         <span class="symbol-btn" onclick="window.history.back()">&lt;&lt;</span>
         <div class="flex gap-1 mx-1 items-center">
@@ -669,6 +631,16 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 </div>
 
 <script>
+function openSettings() { document.getElementById('settings-panel').style.display = 'block'; document.querySelector('.overlay').style.display = 'block'; }
+function closeSettings() { document.getElementById('settings-panel').style.display = 'none'; document.querySelector('.overlay').style.display = 'none'; }
+
+function toggleWaterfall() {
+    const params = new URLSearchParams(window.location.search);
+    const currentWf = params.get('wf') === '1';
+    params.set('wf', currentWf ? '0' : '1');
+    location.href = window.location.pathname + '?' + params.toString();
+}
+
 let currentLevel = '';
 let factoryParentSid = '';
 
