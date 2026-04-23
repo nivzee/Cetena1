@@ -59,6 +59,7 @@ def index():
     dom_code = curr_dom.get('code', '')
 
     # 3. Breadcrumb & Menu Logic (DB-BASED)
+    mode = request.args.get('mode', 'data') # 'data' hoặc 'dna'
     sid_path = request.args.get('sid', '').strip('/')
     sub_parts = [p for p in sid_path.split('/') if p]
     breadcrumb_subs = []
@@ -71,7 +72,8 @@ def index():
         def sync_disk_to_db(path, p_id=None):
             if not os.path.exists(path): return
             for entry in os.scandir(path):
-                if entry.is_dir() and not entry.name.startswith('.'):
+                # Không quét thư mục DNA vào database cấu trúc dữ liệu
+                if entry.is_dir() and not entry.name.startswith('.') and entry.name != 'DNA':
                     # So khớp không phân biệt hoa thường
                     if p_id is None:
                         res = query_db("SELECT id FROM dna_structure WHERE UPPER(code) = UPPER(%s) AND parent_id IS NULL AND entity_id = %s AND domain_id = %s", [entry.name, e_int, d_int])
@@ -106,41 +108,94 @@ def index():
         # 3. WATERFALL REDIRECT: NHẢY ĐẾN ĐÍCH CUỐI CÙNG
         target_sid = sid_path
         wf_id = curr_id
-        while True:
-            if wf_id is None:
-                f = query_db("SELECT id, code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s ORDER BY id LIMIT 1", [e_int, d_int])
-            elif wf_id != -1:
-                f = query_db("SELECT id, code FROM dna_structure WHERE parent_id = %s ORDER BY id LIMIT 1", [wf_id])
-            else: f = None
+        # Skip waterfall if in DNA mode or organ is selected
+        if mode != 'dna' and not request.args.get('organ'):
+            while True:
+                if wf_id is None:
+                    f = query_db("SELECT id, code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s ORDER BY id LIMIT 1", [e_int, d_int])
+                elif wf_id != -1:
+                    f = query_db("SELECT id, code FROM dna_structure WHERE parent_id = %s ORDER BY id LIMIT 1", [wf_id])
+                else: f = None
 
-            if f:
-                wf_id = f[0]['id']
-                target_sid = (target_sid + '/' + f[0]['code']).strip('/')
-            else: break
+                if f:
+                    wf_id = f[0]['id']
+                    target_sid = (target_sid + '/' + f[0]['code']).strip('/')
+                else: break
 
         if target_sid != sid_path:
-            return redirect(url_for('index', u=user['username'], eid=eid, did=did, sid=target_sid))
+            return redirect(url_for('index', u=user['username'], eid=eid, did=did, sid=target_sid, mode=mode, organ=request.args.get('organ')))
 
-        # 4. DỰNG BREADCRUMB UI
-        breadcrumb_subs = []
-        acc = ""
-        parent_ids = [None] + [n['id'] for n in path_nodes[:-1]]
-        for i, part in enumerate(sub_parts):
-            p_id = parent_ids[i]
-            if p_id is None:
-                sibs = query_db("SELECT code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s", [e_int, d_int])
-            else:
-                sibs = query_db("SELECT code FROM dna_structure WHERE parent_id = %s", [p_id])
-            acc = (acc + '/' + part) if acc else part
-            breadcrumb_subs.append({"name": part, "path": acc, "options": sorted(list(set([s['code'] for s in sibs])))})
+    # 4. DỰNG BREADCRUMB UI
+    breadcrumb_subs = []
+    acc = ""
+    parent_ids = [None] + [n['id'] for n in path_nodes[:-1]]
+    for i, part in enumerate(sub_parts):
+        p_id = parent_ids[i]
+        if p_id is None:
+            sibs = query_db("SELECT code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s", [e_int, d_int])
+        else:
+            sibs = query_db("SELECT code FROM dna_structure WHERE parent_id = %s", [p_id])
+        acc = (acc + '/' + part) if acc else part
 
-        # 5. LỰA CHỌN TIẾP THEO (PENDING)
-        if curr_id is None:
-            next_items = query_db("SELECT code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s", [e_int, d_int])
-        elif curr_id != -1:
-            next_items = query_db("SELECT code FROM dna_structure WHERE parent_id = %s", [curr_id])
-        else: next_items = []
-        pending_options = sorted(list(set([i['code'] for i in next_items])))
+        # Kiểm tra sự tồn tại vật lý
+        dna_path = os.path.join(f"app/{ent_code}/DNA/{dom_code}", acc)
+        has_dna_zone = os.path.exists(dna_path)
+        has_reified = os.path.exists(os.path.join(dna_path, "Script"))
+
+        breadcrumb_subs.append({
+            "name": part,
+            "path": acc,
+            "options": sorted(list(set([s['code'] for s in sibs]))),
+            "has_dna_zone": has_dna_zone,
+            "has_dna": has_reified
+        })
+
+    # Kiểm tra DNA zone cho Entity và Domain
+    has_ent_dna_zone = os.path.exists(f"app/{ent_code}/DNA") if ent_code else False
+    has_dom_dna_zone = os.path.exists(f"app/{ent_code}/DNA/{dom_code}") if (ent_code and dom_code) else False
+
+    # Kiểm tra Reified (Có nội tạng)
+    has_ent_reified = os.path.exists(os.path.join(f"app/{ent_code}/DNA", "Script")) if ent_code else False
+    has_dom_reified = os.path.exists(os.path.join(f"app/{ent_code}/DNA/{dom_code}", "Script")) if (ent_code and dom_code) else False
+
+    # 5. LỰA CHỌN TIẾP THEO (PENDING)
+    if curr_id is None:
+        next_items = query_db("SELECT code FROM dna_structure WHERE parent_id IS NULL AND entity_id = %s AND domain_id = %s", [e_int, d_int])
+    elif curr_id != -1:
+        next_items = query_db("SELECT code FROM dna_structure WHERE parent_id = %s", [curr_id])
+    else: next_items = []
+    pending_options = sorted(list(set([i['code'] for i in next_items])))
+
+    # 6. DNA ORGANS & FILE LISTING
+    dna_organs = []
+    organ_files = []
+    curr_organ = request.args.get('organ')
+
+    if mode == 'dna' and eid and did:
+        # Kiểm tra sự tồn tại của 4 nội tạng trong DNA zone
+        dna_path = os.path.join(f"app/{ent_code}/DNA/{dom_code}", sid_path)
+
+        if curr_organ:
+            # List files in the selected organ
+            target_path = os.path.join(dna_path, curr_organ)
+            if os.path.exists(target_path):
+                if os.path.isdir(target_path):
+                    for entry in os.scandir(target_path):
+                        if entry.is_file():
+                            organ_files.append({"name": entry.name, "size": entry.stat().st_size})
+                else:
+                    # If it's a file (shouldn't happen with our organ structure but for safety)
+                    organ_files.append({"name": os.path.basename(target_path), "size": os.path.getsize(target_path)})
+        else:
+            organs = [
+                {"name": "Standardized", "path": "Standardized", "icon": "fa-file-csv", "color": "#4ade80"},
+                {"name": "Processed", "path": "Processed", "icon": "fa-archive", "color": "#9ca3af"},
+                {"name": "Script", "path": "Script", "icon": "fa-code", "color": "#facc15"},
+                {"name": "Script/Template", "path": "Script/Template", "icon": "fa-fill-drip", "color": "#60a5fa"}
+            ]
+            for org in organs:
+                if os.path.exists(os.path.join(dna_path, org['path'])):
+                    dna_organs.append(org)
 
     dna = {"prefix": "SYSTEM:", "primary_color": "#00ff00"}
     if eid and did:
@@ -194,7 +249,14 @@ def index():
 <style>
 :root { --primary: {{ dna.primary_color }}; }
 body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #eee; }
-.bc-item { display: flex; align-items: center; position: relative; }
+.bc-item { display: flex; flex-direction: column; align-items: center; position: relative; margin: 0 2px; }
+.bc-main { display: flex; align-items: center; min-height: 20px; }
+.bc-organ-caret { cursor: pointer; color: #00ff00; font-size: 10px; line-height: 1; margin-top: -4px; opacity: 0.7; transition: 0.2s; height: 10px; width: 100%; text-align: center; }
+.bc-organ-caret:hover { opacity: 1; text-shadow: 0 0 5px #00ff00; }
+.organ-dropdown { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); background: #0a0a0a; border: 1px solid #1a1a1a; min-width: 140px; display: none; z-index:110; box-shadow: 0 5px 20px rgba(0,255,0,0.2); }
+.bc-item:hover .organ-dropdown { display: block; }
+.organ-dropdown div { padding: 8px 12px; font-size: 10px; border-bottom: 1px solid #111; color: #888; display: flex; align-items: center; gap: 8px; }
+.organ-dropdown div:hover { background: #111; color: #00ff00; }
 .bc-text { cursor: pointer; color: #fff; font-weight: bold; text-shadow: 0 0 5px rgba(255,255,255,0.2); transition: 0.2s; }
 .bc-text:hover { color: var(--primary); }
 .bc-caret { cursor: pointer; padding: 0 8px; color: #666; font-size: 10px; transition: color 0.2s; position: relative; display: flex; align-items: center; height: 100%; }
@@ -266,46 +328,96 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 <!-- BREADCRUMB -->
 <div class="flex justify-between border-b border-gray-800 pb-5 mb-10">
 <div class="flex items-center text-[12px] uppercase tracking-tight">
-    <div class="bc-item"><span class="bc-text" style="color:#aaa">{{ user.username }}</span><span class="mx-2 text-gray-600 font-bold">@</span></div>
-
     <!-- ENTITY -->
     <div class="bc-item">
-        {% if curr_ent.code %}
-            <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}'">{{ curr_ent.code }}</span>
-            <div class="bc-caret">▼
-                <div class="dropdown">
-                    {% for ent in entities %}
-                        <div class="group flex justify-between items-center {% if ent.code == curr_ent.code %}bg-gray-900/50{% endif %}">
-                            <span class="flex-grow {% if ent.code == curr_ent.code %}text-white font-bold{% endif %}" onclick="location.href='/?u={{user.username}}&eid={{ent.id}}'">{{ ent.code }}</span>
-                            {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('entity', '{{ent.id}}', '{{ent.code}}')"></i>{% endif %}
-                        </div>
-                    {% endfor %}
-                    {% if is_sa %}<div class="text-green-500 font-bold border-t border-gray-800" onclick="openPanel('entity', '')">+ NEW ENTITY</div>{% endif %}
+        <div class="bc-main">
+            <span class="bc-text" style="color:#aaa">{{ user.username }}</span>
+            {% set next_mode = 'dna' if mode == 'data' else 'data' %}
+            <span class="bc-text mx-2 font-black transition-all duration-300"
+                  style="color: {{ '#00ff00' if mode == 'dna' else '#555' }}; text-shadow: {{ '0 0 10px #00ff00' if mode == 'dna' else 'none' }}; cursor:pointer;"
+                  onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{sid_path}}&mode={{next_mode}}'"
+                  title="Toggle DNA Mode">
+                @{{ 'n' if mode == 'dna' else '' }}
+            </span>
+            {% if curr_ent.code %}
+                <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&mode={{mode}}'">{{ curr_ent.code }}</span>
+                <div class="bc-caret">▼
+                    <div class="dropdown">
+                        {% for ent in entities %}
+                            <div class="group flex justify-between items-center {% if ent.code == curr_ent.code %}bg-gray-900/50{% endif %}">
+                                <span class="flex-grow {% if ent.code == curr_ent.code %}text-white font-bold{% endif %}" onclick="location.href='/?u={{user.username}}&eid={{ent.id}}&mode={{mode}}'">{{ ent.code }}</span>
+                                {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('entity', '{{ent.id}}', '{{ent.code}}')"></i>{% endif %}
+                            </div>
+                        {% endfor %}
+                        {% if is_sa %}
+                            {% if mode == 'dna' %}
+                                {% if curr_ent.code %}
+                                <div class="font-bold border-t border-gray-800 {% if has_ent_reified %}text-gray-600 opacity-40 pointer-events-none{% else %}text-blue-400{% endif %}" onclick="openPanel('entity', '', '{{curr_ent.code}}', '{{curr_ent.name}}')">
+                                    <i class="fas {% if has_ent_reified %}fa-check-circle{% else %}fa-atom{% endif %} mr-2"></i>REIFY NUCLEUS: {{curr_ent.code}}
+                                </div>
+                                {% endif %}
+                            {% else %}
+                                <div class="text-green-500 font-bold border-t border-gray-800" onclick="openPanel('entity', '')">+ NEW ENTITY</div>
+                            {% endif %}
+                        {% endif %}
+                    </div>
                 </div>
+            {% else %}
+                <span class="plus-btn" onclick="openPanel('entity', '')">+</span>
+            {% endif %}
+        </div>
+        {% if mode == 'dna' and has_ent_dna_zone %}
+        <div class="bc-organ-caret">▾
+            <div class="organ-dropdown">
+                <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&mode=dna&organ=Standardized'"><i class="fas fa-file-csv w-4"></i> Standardized</div>
+                <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&mode=dna&organ=Processed'"><i class="fas fa-archive w-4"></i> Processed</div>
+                <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&mode=dna&organ=Script'"><i class="fas fa-code w-4"></i> Script</div>
+                <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&mode=dna&organ=Template'"><i class="fas fa-fill-drip w-4"></i> Template</div>
             </div>
-        {% else %}
-            <span class="plus-btn" onclick="openPanel('entity', '')">+</span>
+        </div>
         {% endif %}
     </div>
 
     {% if curr_ent.code %}
     <span class="mx-2 text-gray-600 font-bold">/</span>
     <div class="bc-item">
-        {% if curr_dom.code %}
-            <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}'">{{ curr_dom.code }}</span>
-            <div class="bc-caret">▼
-                <div class="dropdown">
-                    {% for dom in domains %}
-                        <div class="group flex justify-between items-center {% if dom.code == curr_dom.code %}bg-gray-900/50{% endif %}">
-                            <span class="flex-grow {% if dom.code == curr_dom.code %}text-white font-bold{% endif %}" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{dom.id}}'">{{ dom.code }}</span>
-                            {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('domain', '{{dom.id}}', '{{dom.code}}')"></i>{% endif %}
-                        </div>
-                    {% endfor %}
-                    {% if is_sa %}<div class="text-green-500 font-bold border-t border-gray-800" onclick="openPanel('domain', '')">+ NEW DOMAIN</div>{% endif %}
+        <div class="bc-main">
+            {% if curr_dom.code %}
+                <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&mode={{mode}}'">{{ curr_dom.code }}</span>
+                <div class="bc-caret">▼
+                    <div class="dropdown">
+                        {% for dom in domains %}
+                            <div class="group flex justify-between items-center {% if dom.code == curr_dom.code %}bg-gray-900/50{% endif %}">
+                                <span class="flex-grow {% if dom.code == curr_dom.code %}text-white font-bold{% endif %}" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{dom.id}}&mode={{mode}}'">{{ dom.code }}</span>
+                                {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('domain', '{{dom.id}}', '{{dom.code}}')"></i>{% endif %}
+                            </div>
+                        {% endfor %}
+                        {% if is_sa %}
+                            {% if mode == 'dna' %}
+                                {% if curr_dom.code %}
+                                <div class="font-bold border-t border-gray-800 {% if has_dom_reified %}text-gray-600 opacity-40 pointer-events-none{% else %}text-blue-400{% endif %}" onclick="openPanel('domain', '', '{{curr_dom.code}}', '{{curr_dom.name}}')">
+                                    <i class="fas {% if has_dom_reified %}fa-check-circle{% else %}fa-atom{% endif %} mr-2"></i>REIFY NUCLEUS: {{curr_dom.code}}
+                                </div>
+                                {% endif %}
+                            {% else %}
+                                <div class="text-green-500 font-bold border-t border-gray-800" onclick="openPanel('domain', '')">+ NEW DOMAIN</div>
+                            {% endif %}
+                        {% endif %}
+                    </div>
                 </div>
+            {% else %}
+                <span class="plus-btn" onclick="openPanel('domain', '')">+</span>
+            {% endif %}
+        </div>
+        {% if mode == 'dna' and has_dom_dna_zone %}
+        <div class="bc-organ-caret">▾
+            <div class="organ-dropdown">
+                <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&mode=dna&organ=Standardized'"><i class="fas fa-file-csv w-4"></i> Standardized</div>
+                <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&mode=dna&organ=Processed'"><i class="fas fa-archive w-4"></i> Processed</div>
+                <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&mode=dna&organ=Script'"><i class="fas fa-code w-4"></i> Script</div>
+                <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&mode=dna&organ=Template'"><i class="fas fa-fill-drip w-4"></i> Template</div>
             </div>
-        {% else %}
-            <span class="plus-btn" onclick="openPanel('domain', '')">+</span>
+        </div>
         {% endif %}
     </div>
 
@@ -314,25 +426,45 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
         {% for sub in breadcrumb_subs %}
         <span class="mx-2 text-gray-600 font-bold">/</span>
         <div class="bc-item">
-            <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ sub.path }}'">{{ sub.name }}</span>
-            <div class="bc-caret">▼
-                <div class="dropdown">
-                    {% for opt in sub.options %}
-                        {% set parts = sub.path.split('/')[:-1] %}
-                        {% set opt_sid = (parts + [opt])|join('/') if parts else opt %}
-                        <div class="group flex justify-between items-center {% if opt == sub.name %}bg-gray-900/50{% endif %}">
-                            <span class="flex-grow {% if opt == sub.name %}text-white font-bold{% endif %}" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ opt_sid }}'">{{ opt }}</span>
-                            {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('sub', '{{ opt_sid }}', '{{ opt }}')"></i>{% endif %}
-                        </div>
-                    {% endfor %}
-                    {% if is_sa %}<div class="text-green-500 font-bold border-t border-gray-800" onclick="openPanel('sub', '{{ '/'.join(sub.path.split('/')[:-1]) }}')">+ NEW SIBLING</div>{% endif %}
+            <div class="bc-main">
+                <span class="bc-text" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ sub.path }}&mode={{mode}}'">{{ sub.name }}</span>
+                <div class="bc-caret">▼
+                    <div class="dropdown">
+                        {% for opt in sub.options %}
+                            {% set parts = sub.path.split('/')[:-1] %}
+                            {% set opt_sid = (parts + [opt])|join('/') if parts else opt %}
+                            <div class="group flex justify-between items-center {% if opt == sub.name %}bg-gray-900/50{% endif %}">
+                                <span class="flex-grow {% if opt == sub.name %}text-white font-bold{% endif %}" onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ opt_sid }}&mode={{mode}}'">{{ opt }}</span>
+                                {% if is_sa %}<i class="fas fa-minus-circle text-red-900 hover:text-red-600 ml-2 cursor-pointer opacity-0 group-hover:opacity-100 transition-opacity" onclick="event.stopPropagation(); deleteItem('sub', '{{ opt_sid }}', '{{ opt }}')"></i>{% endif %}
+                            </div>
+                        {% endfor %}
+                        {% if is_sa %}
+                            {% if mode == 'dna' %}
+                                <div class="font-bold border-t border-gray-800 {% if sub.has_dna %}text-gray-600 opacity-40 pointer-events-none{% else %}text-blue-400{% endif %}" onclick="openPanel('sub', '{{ '/'.join(sub.path.split('/')[:-1]) }}', '{{sub.name}}', '{{sub.name}}')">
+                                    <i class="fas {% if sub.has_dna %}fa-check-circle{% else %}fa-atom{% endif %} mr-2"></i>REIFY NUCLEUS: {{sub.name}}
+                                </div>
+                            {% else %}
+                                <div class="text-green-500 font-bold border-t border-gray-800" onclick="openPanel('sub', '{{ '/'.join(sub.path.split('/')[:-1]) }}')">+ NEW SIBLING</div>
+                            {% endif %}
+                        {% endif %}
+                    </div>
                 </div>
             </div>
+            {% if mode == 'dna' and sub.has_dna_zone %}
+            <div class="bc-organ-caret">▾
+                <div class="organ-dropdown">
+                    <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{sub.path}}&mode=dna&organ=Standardized'"><i class="fas fa-file-csv w-4"></i> Standardized</div>
+                    <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{sub.path}}&mode=dna&organ=Processed'"><i class="fas fa-archive w-4"></i> Processed</div>
+                    <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{sub.path}}&mode=dna&organ=Script'"><i class="fas fa-code w-4"></i> Script</div>
+                    <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{sub.path}}&mode=dna&organ=Template'"><i class="fas fa-fill-drip w-4"></i> Template</div>
+                </div>
+            </div>
+            {% endif %}
         </div>
         {% endfor %}
 
         <span class="mx-2 text-gray-600 font-bold">/</span>
-        {% if is_sa %}<span class="plus-btn" title="Create New Child" onclick="openPanel('sub', '{{ sid_path }}')">+</span>{% endif %}
+        {% if is_sa %}<span class="plus-btn" title="Create New Nucleus" onclick="openPanel('sub', '{{ sid_path }}')">+</span>{% endif %}
     {% endif %}
     {% endif %}
 
@@ -350,20 +482,100 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 </div>
 
 <div class="max-w-4xl">
-<h2 class="text-4xl font-bold opacity-10 tracking-[1em] mb-10 uppercase">{{ sub_parts[-1] if sub_parts else (curr_dom.code or 'DNA') }}</h2>
+    <h2 class="text-4xl font-bold opacity-10 tracking-[1em] mb-10 uppercase">{{ sub_parts[-1] if sub_parts else (curr_dom.code or 'DNA') }}</h2>
+
+    <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+        {% if mode == 'dna' %}
+            {% if curr_organ %}
+                <div class="col-span-full mb-4 flex justify-between items-center border-b border-gray-900 pb-2">
+                    <h3 class="text-xs font-bold text-green-500 uppercase flex items-center gap-2">
+                        <i class="fas fa-folder-open"></i> {{ curr_organ }}
+                        <span class="text-[10px] text-gray-600 font-normal">/ {{ sid_path }}</span>
+                    </h3>
+                    <button onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{sid_path}}&mode=dna'" class="text-[9px] text-gray-500 hover:text-white uppercase">
+                        <i class="fas fa-arrow-left mr-1"></i> Back to Organs
+                    </button>
+                </div>
+                {% for file in organ_files %}
+                <div class="bg-gray-900/40 border border-gray-800 p-3 rounded hover:border-green-500 transition-all cursor-pointer flex items-center gap-3 group">
+                    <i class="fas fa-file-code text-gray-600 group-hover:text-green-500"></i>
+                    <div class="flex flex-col overflow-hidden">
+                        <span class="text-[11px] text-gray-300 truncate" title="{{ file.name }}">{{ file.name }}</span>
+                        <span class="text-[8px] text-gray-600">{{ (file.size / 1024)|round(1) }} KB</span>
+                    </div>
+                </div>
+                {% endfor %}
+                {% if not organ_files %}
+                <div class="col-span-full py-20 text-center border-2 border-dashed border-gray-900 rounded-lg">
+                    <div class="text-gray-600 text-xs uppercase mb-2">Empty Organ</div>
+                    <div class="text-[9px] text-gray-800">No files found in {{ curr_organ }}</div>
+                </div>
+                {% endif %}
+            {% else %}
+                {% for org in dna_organs %}
+                <div class="bg-gray-900/30 border border-gray-800 p-4 rounded hover:border-blue-500 transition-all cursor-pointer group"
+                     onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{sid_path}}&mode=dna&organ={{org.path}}'">
+                    <div class="text-[8px] text-gray-500 uppercase mb-2">Internal Organ</div>
+                    <div class="flex items-center gap-3">
+                        <i class="fas {{ org.icon }} text-xl" style="color: {{ org.color }}"></i>
+                        <span class="text-xs font-bold text-gray-200 group-hover:text-white">{{ org.name }}</span>
+                    </div>
+                </div>
+                {% endfor %}
+                {% if not dna_organs and sid_path %}
+                <div class="col-span-full py-10 text-center border-2 border-dashed border-gray-900 rounded-lg">
+                    <div class="text-gray-600 text-xs uppercase mb-4">No DNA Organs found for this node</div>
+                    <button onclick="openPanel('sub', '{{ '/'.join(sid_path.split('/')[:-1]) }}', '{{sub_parts[-1]}}', '{{sub_parts[-1]}}')" class="bg-green-900/20 text-green-500 text-[10px] px-4 py-2 rounded hover:bg-green-900/40 transition-all">
+                        <i class="fas fa-dna mr-2"></i>REIFY NUCLEUS: {{sub_parts[-1]}}
+                    </button>
+                </div>
+                {% endif %}
+            {% endif %}
+        {% endif %}
+
+        {% for opt in pending_options %}
+            <div class="bg-gray-900/20 border border-gray-900 p-4 rounded hover:bg-gray-900/40 transition-all cursor-pointer group"
+                 onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ (sid_path + '/' + opt).strip('/') }}&mode={{mode}}'">
+                <div class="text-[8px] text-gray-600 uppercase mb-2">Next Gen</div>
+                <div class="flex justify-between items-center">
+                    <span class="text-xs font-bold text-gray-400 group-hover:text-white transition-colors">{{ opt }}</span>
+                    <i class="fas fa-chevron-right text-[10px] text-gray-800 group-hover:text-green-500 transition-colors"></i>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
 </div>
 
 <script>
 let currentLevel = '';
 let factoryParentSid = '';
 
-function openPanel(level, pSid) {
+function openPanel(level, pSid, prefillCode = '', prefillName = '') {
+    const isDNA = new URLSearchParams(window.location.search).get('mode') === 'dna';
     currentLevel = level;
     factoryParentSid = pSid;
-    document.getElementById('factory-context').innerText = (pSid || 'ROOT') + ' > NEW ' + level.toUpperCase();
+
+    let actionName = 'NEW ' + level.toUpperCase();
+    if (prefillCode) actionName = 'REIFY NUCLEUS';
+    else if (isDNA) actionName = 'INIT NUCLEUS';
+
+    document.getElementById('factory-context').innerText = (pSid || 'ROOT') + ' > ' + actionName;
+
+    const codeInput = document.getElementById('f-code');
+    const nameInput = document.getElementById('f-name');
+    const templateCheckbox = document.getElementById('f-template');
+
+    codeInput.value = prefillCode;
+    nameInput.value = prefillName;
+
+    if (prefillCode) {
+        templateCheckbox.checked = true; // Auto check if initializing existing
+        toggleTemplatePanel();
+    }
+
     document.getElementById('factory-panel').style.display = 'block';
     document.querySelector('.overlay').style.display = 'block';
-    document.getElementById('f-code').focus();
+    codeInput.focus();
 }
 function closePanel() { document.getElementById('factory-panel').style.display = 'none'; document.querySelector('.overlay').style.display = 'none'; }
 
@@ -404,11 +616,13 @@ function submitFactory() {
     .then(res => res.json())
     .then(data => {
         if(data.success) {
+            const params = new URLSearchParams(window.location.search);
+            const mode = params.get('mode') || 'data';
             if (currentLevel === 'sub') {
                 const newSid = factoryParentSid ? (factoryParentSid + '/' + code) : code;
-                location.href = `/?u={{user.username}}&eid={{eid}}&did={{did}}&sid=${newSid}`;
+                location.href = `/?u={{user.username}}&eid={{eid}}&did={{did}}&sid=${newSid}&mode=${mode}`;
             } else {
-                location.reload();
+                location.href = `/?u={{user.username}}&eid={{eid}}&did={{did}}&mode=${mode}`;
             }
         } else {
             alert('Error: ' + data.message);
@@ -458,7 +672,7 @@ function deleteItem(level, id, code) {
     });
 }
 </script>
-</body></html>""", shortcuts=shortcuts, eid=eid, did=did, sid_path=sid_path, breadcrumb_subs=breadcrumb_subs, entities=entities, domains=domains, user=user, is_sa=is_sa, dna=dna, shortcut_json=shortcut_json, curr_ent=curr_ent, curr_dom=curr_dom, sub_parts=sub_parts, pending_options=pending_options, base_path=base_path)
+</body></html>""", shortcuts=shortcuts, eid=eid, did=did, sid_path=sid_path, breadcrumb_subs=breadcrumb_subs, entities=entities, domains=domains, user=user, is_sa=is_sa, dna=dna, shortcut_json=shortcut_json, curr_ent=curr_ent, curr_dom=curr_dom, sub_parts=sub_parts, pending_options=pending_options, base_path=base_path, mode=mode, dna_organs=dna_organs, curr_organ=curr_organ, organ_files=organ_files, has_ent_dna_zone=has_ent_dna_zone, has_dom_dna_zone=has_dom_dna_zone, has_ent_reified=has_ent_reified, has_dom_reified=has_dom_reified)
 
 @app.route('/browse_path', methods=['POST'])
 def browse_path():
@@ -489,72 +703,80 @@ def initialize_dna():
     src_temp = data.get('src_temp')
     src_script = data.get('src_script')
 
-    def create_template(base_path, folder_name):
+    def create_template(ent_code, dom_code, psid, code):
         if use_template:
-            # Create standard subfolders
-            temp_dir = os.path.join(base_path, f"{folder_name.lower()}_temp")
-            script_dir = os.path.join(base_path, "script")
-            os.makedirs(temp_dir, exist_ok=True)
-            os.makedirs(script_dir, exist_ok=True)
-            os.makedirs(os.path.join(base_path, f"{folder_name.lower()}_standardized"), exist_ok=True)
-            os.makedirs(os.path.join(base_path, "processed"), exist_ok=True)
+            # 1. Cấu trúc DNA mới theo ý chú
+            # KET/DNA/PUR/REQ/Standardized
+            # KET/DNA/PUR/REQ/Processed
+            # KET/DNA/PUR/REQ/Script
+            # KET/DNA/PUR/REQ/Script/Template
+            dna_base = os.path.join(f"app/{ent_code}/DNA/{dom_code}", psid, code)
 
-            # Copy source files if provided
+            std_dir = os.path.join(dna_base, "Standardized")
+            proc_dir = os.path.join(dna_base, "Processed")
+            script_dir = os.path.join(dna_base, "Script")
+            tpl_dir = os.path.join(script_dir, "Template")
+
+            for d in [std_dir, proc_dir, tpl_dir]: os.makedirs(d, exist_ok=True)
+
+            # Copy source files nếu có
             if src_temp and os.path.exists(src_temp):
-                if os.path.isdir(src_temp):
-                    shutil.copytree(src_temp, temp_dir, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(src_temp, temp_dir)
+                if os.path.isdir(src_temp): shutil.copytree(src_temp, tpl_dir, dirs_exist_ok=True)
+                else: shutil.copy2(src_temp, tpl_dir)
 
             if src_script and os.path.exists(src_script):
-                if os.path.isdir(src_script):
-                    shutil.copytree(src_script, script_dir, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(src_script, script_dir)
+                if os.path.isdir(src_script): shutil.copytree(src_script, script_dir, dirs_exist_ok=True)
+                else: shutil.copy2(src_script, script_dir)
 
     try:
         if level == 'entity':
-            query_db("INSERT INTO entities (name, code) VALUES (%s, %s)", [data.get('name'), code])
-            path = f"app/{code}"; os.makedirs(path, exist_ok=True); create_template(path, code)
+            res = query_db("SELECT id FROM entities WHERE code = %s", [code])
+            if not res:
+                query_db("INSERT INTO entities (name, code) VALUES (%s, %s)", [data.get('name'), code])
+            os.makedirs(f"app/{code}", exist_ok=True)
+            os.makedirs(f"app/{code}/DNA", exist_ok=True) # Luôn tạo DNA folder cho Entity
+            if use_template: create_template(code, "", "", "") # Nếu stick template thì cấy luôn vào gốc DNA
+
         else:
-            if not peid: return jsonify({"success": False, "message": "Missing Entity ID"})
             ent_res = query_db("SELECT code FROM entities WHERE id = %s", [int(peid)])
-            if not ent_res: return jsonify({"success": False, "message": "Entity not found in DB"})
             ent_code = ent_res[0]['code']
 
             if level == 'domain':
-                query_db("INSERT INTO domains (name, code) VALUES (%s, %s) ON CONFLICT (code) DO NOTHING", [data.get('name'), code])
-                dom_id_res = query_db("SELECT id FROM domains WHERE code = %s", [code])
-                if not dom_id_res: return jsonify({"success": False, "message": "Failed to create/find domain"})
-                dom_id = dom_id_res[0]['id']
+                res = query_db("SELECT id FROM domains WHERE code = %s", [code])
+                if not res:
+                    query_db("INSERT INTO domains (name, code) VALUES (%s, %s)", [data.get('name'), code])
+                dom_id = query_db("SELECT id FROM domains WHERE code = %s", [code])[0]['id']
                 query_db("INSERT INTO dna_kernel (entity_id, domain_id, ui_config) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING", [int(peid), dom_id, json.dumps({"prefix": f"{code.lower()}@", "primary_color": "#00ff00"})])
-                path = f"app/{ent_code}/{code}"; os.makedirs(path, exist_ok=True); create_template(path, code)
-            elif level == 'sub':
-                if not pdid: return jsonify({"success": False, "message": "Missing Domain ID"})
-                dom_res = query_db("SELECT code FROM domains WHERE id = %s", [int(pdid)])
-                if not dom_res: return jsonify({"success": False, "message": "Domain not found in DB"})
-                dom_code = dom_res[0]['code']
+                os.makedirs(f"app/{ent_code}/{code}", exist_ok=True)
+                os.makedirs(f"app/{ent_code}/DNA/{code}", exist_ok=True) # Luôn tạo DNA zone cho Domain
+                if use_template: create_template(ent_code, code, "", "")
 
-                # 1. Tìm parent_id cho bản ghi mới
+            elif level == 'sub':
+                dom_code = query_db("SELECT code FROM domains WHERE id = %s", [int(pdid)])[0]['code']
+                # ... (giữ nguyên logic tìm parent_id)
+
+                # 1. Tìm parent_id
                 parent_id = None
                 if psid:
-                    parts = [p for p in psid.split('/') if p]
                     curr = None
-                    for p in parts:
-                        if curr is None:
-                            r = query_db("SELECT id FROM dna_structure WHERE code = %s AND parent_id IS NULL AND entity_id = %s AND domain_id = %s", [p, int(peid), int(pdid)])
-                        else:
-                            r = query_db("SELECT id FROM dna_structure WHERE code = %s AND parent_id = %s", [p, curr])
+                    for p in [x for x in psid.split('/') if x]:
+                        r = query_db("SELECT id FROM dna_structure WHERE code = %s AND parent_id " + ("IS NULL" if curr is None else f"= {curr}") + " AND entity_id = %s AND domain_id = %s", [p, int(peid), int(pdid)])
                         if r: curr = r[0]['id']
                     parent_id = curr
 
-                # 2. Insert vào Database (BẮT BUỘC ĐỂ REDIRECT CHẠY)
-                query_db("INSERT INTO dna_structure (entity_id, domain_id, parent_id, code, name) VALUES (%s, %s, %s, %s, %s)",
-                         [int(peid), int(pdid), parent_id, code, data.get('name') or code])
+                # 2. Kiểm tra tồn tại trước khi Insert
+                sql_check = "SELECT id FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND code = %s AND "
+                sql_check += "parent_id IS NULL" if parent_id is None else f"parent_id = {parent_id}"
+                res_sub = query_db(sql_check, [int(peid), int(pdid), code])
 
-                # 3. Tạo thư mục vật lý
-                path = os.path.join(f"app/{ent_code}/{dom_code}", psid, code)
-                os.makedirs(path, exist_ok=True); create_template(path, code)
+                if not res_sub:
+                    query_db("INSERT INTO dna_structure (entity_id, domain_id, parent_id, code, name) VALUES (%s, %s, %s, %s, %s)",
+                            [int(peid), int(pdid), parent_id, code, data.get('name') or code])
+
+                # 3. Tạo thư mục vật lý (Data Zone & DNA Zone)
+                os.makedirs(os.path.join(f"app/{ent_code}/{dom_code}", psid, code), exist_ok=True)
+                os.makedirs(os.path.join(f"app/{ent_code}/DNA/{dom_code}", psid, code), exist_ok=True)
+                create_template(ent_code, dom_code, psid, code)
         return jsonify({"success": True})
     except Exception as e: return jsonify({"success": False, "message": str(e)})
 
@@ -579,8 +801,12 @@ def delete_dna():
                 dom_code = dom_res[0]['code']
                 ent_code = query_db("SELECT code FROM entities WHERE id = %s", [int(peid)])[0]['code']
                 query_db("DELETE FROM dna_kernel WHERE entity_id = %s AND domain_id = %s", [int(peid), int(target_id)])
-                path = f"app/{ent_code}/{dom_code}"
-                if os.path.exists(path): shutil.rmtree(path)
+                # Delete Data Zone
+                path_data = f"app/{ent_code}/{dom_code}"
+                if os.path.exists(path_data): shutil.rmtree(path_data)
+                # Delete DNA Zone
+                path_dna = f"app/{ent_code}/DNA/{dom_code}"
+                if os.path.exists(path_dna): shutil.rmtree(path_dna)
 
         elif level == 'sub':
             ent_code = query_db("SELECT code FROM entities WHERE id = %s", [int(peid)])[0]['code']
@@ -596,14 +822,16 @@ def delete_dna():
                 res = query_db("SELECT id FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND code = %s AND " + ("parent_id IS NULL" if temp_p is None else f"parent_id = {temp_p}"), [int(peid), int(pdid), p])
                 if res: temp_p = res[0]['id']
 
-            # Delete from DB (including children recursively - though simple DELETE for now)
-            # In production, we'd need a recursive CTE or child lookup
+            # Delete from DB
             query_db("DELETE FROM dna_structure WHERE entity_id = %s AND domain_id = %s AND code = %s AND " + ("parent_id IS NULL" if temp_p is None else f"parent_id = {temp_p}"), [int(peid), int(pdid), code_to_delete])
 
-            # Physical delete
-            full_base = f"app/{ent_code}/{dom_code}"
-            path = os.path.join(full_base, target_id)
-            if os.path.exists(path): shutil.rmtree(path)
+            # Physical delete: Data Zone
+            path_data = os.path.join(f"app/{ent_code}/{dom_code}", target_id)
+            if os.path.exists(path_data): shutil.rmtree(path_data)
+
+            # Physical delete: DNA Zone
+            path_dna = os.path.join(f"app/{ent_code}/DNA/{dom_code}", target_id)
+            if os.path.exists(path_dna): shutil.rmtree(path_dna)
 
             # Find replacement sibling from DB
             parent_rel = "/".join(parts[:-1])
