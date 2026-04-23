@@ -1,5 +1,6 @@
 import os, json, shutil, subprocess
 from flask import Flask, render_template_string, jsonify, request, redirect, url_for
+from flask_socketio import SocketIO, emit
 import psycopg2
 from psycopg2.extras import RealDictCursor
 try:
@@ -8,6 +9,22 @@ try:
 except: pass
 
 app = Flask(__name__)
+socketio = SocketIO(app, cors_allowed_origins="*")
+
+@socketio.on('connect')
+def handle_connect():
+    print(f"--- Browser Connected: {request.sid}")
+
+@socketio.on('dna_event')
+def handle_dna_event(data):
+    print(f"!!! RECEIVED FROM WATCHDOG: {data}")
+    # Thêm broadcast=True để đảm bảo gửi tới tất cả trình duyệt
+    socketio.emit('dashboard_notify', data, broadcast=True)
+
+@socketio.on('test_trigger')
+def handle_test(data):
+    print("!!! TEST BUTTON PRESSED")
+    socketio.emit('dashboard_notify', {'message': 'Test Connection Successful! 🚀'})
 DB_CONFIG = {
     "dbname": "cSaas", "user": "c", "password": os.getenv("DB_PASSWORD", "donkihote"), "host": "localhost", "port": "5432"
 }
@@ -265,6 +282,9 @@ def index():
 body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #eee; }
 .bc-item { display: flex; flex-direction: column; align-items: center; position: relative; margin: 0 2px; }
 .bc-main { display: flex; align-items: center; min-height: 20px; }
+.bc-sep { font-size: 10px; color: #222; margin: 0 4px; display: flex; align-items: center; }
+.bc-connector { color: #333; font-size: 11px; letter-spacing: -1px; margin-left: 8px; cursor: pointer; transition: 0.3s; display: flex; align-items: center; gap: 5px; }
+.bc-connector:hover { color: var(--primary); text-shadow: 0 0 8px var(--primary); }
 .bc-organ-caret { cursor: pointer; color: #00ff00; font-size: 10px; line-height: 1; margin-top: -4px; opacity: 0.7; transition: 0.2s; height: 10px; width: 100%; text-align: center; }
 .bc-organ-caret:hover { opacity: 1; text-shadow: 0 0 5px #00ff00; }
 .organ-dropdown { position: absolute; top: 100%; left: 50%; transform: translateX(-50%); background: #0a0a0a; border: 1px solid #1a1a1a; min-width: 140px; display: none; z-index:110; box-shadow: 0 5px 20px rgba(0,255,0,0.2); }
@@ -273,7 +293,7 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 .organ-dropdown div:hover { background: #111; color: #00ff00; }
 .bc-text { cursor: pointer; color: #fff; font-weight: bold; text-shadow: 0 0 5px rgba(255,255,255,0.2); transition: 0.2s; }
 .bc-text:hover { color: var(--primary); }
-.bc-caret { cursor: pointer; padding: 0 8px; color: #666; font-size: 10px; transition: color 0.2s; position: relative; display: flex; align-items: center; height: 100%; }
+.bc-caret { cursor: pointer; padding: 0 4px; color: #444; font-size: 8px; transition: 0.2s; display: flex; align-items: center; height: 100%; position: relative; }
 .bc-caret:hover { color: #fff; }
 .dropdown { position: absolute; top: 100%; left: 0; background: #111; border: 1px solid #333; min-width: 180px; display: none; z-index:100; box-shadow: 0 10px 30px rgba(0,0,0,0.8); }
 .bc-caret:hover .dropdown { display: block; }
@@ -290,6 +310,29 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 .hidden { display: none !important; }
 </style></head>
 <body class="p-10">
+<!-- NOTIFICATION TOAST -->
+<div id="toast-container" class="fixed top-5 right-5 z-[2000] space-y-2"></div>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+    const socket = io({transports: ['polling', 'websocket']});
+    socket.on('connect', () => {
+        console.log("Connected to Cet Core");
+    });
+    socket.on('dashboard_notify', function(data) {
+        console.log("Event Received:", data);
+        showToast(data.message);
+    });
+
+    function showToast(msg) {
+        const container = document.getElementById('toast-container');
+        const toast = document.createElement('div');
+        toast.className = "bg-green-900 border border-green-500 text-white text-[10px] px-4 py-2 rounded shadow-lg animate-bounce";
+        toast.innerHTML = `<i class="fas fa-dog mr-2"></i> ${msg}`;
+        container.appendChild(toast);
+        setTimeout(() => toast.remove(), 5000);
+    }
+</script>
 <!-- DEBUG INFO (Hidden unless SA) -->
 {% if is_sa %}
 <div class="text-[8px] text-gray-700 mb-2 p-2 border border-gray-900">
@@ -477,12 +520,36 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
         </div>
         {% endfor %}
 
-        <span class="mx-2 text-gray-600 font-bold">/</span>
-        {% if is_sa %}<span class="plus-btn" title="Create New Nucleus" onclick="openPanel('sub', '{{ sid_path }}')">+</span>{% endif %}
+        <!-- DNA CONNECTOR (--- ▼) -->
+        {% if pending_options or is_sa %}
+        <div class="bc-item">
+            <div class="bc-main">
+                <div class="bc-connector">
+                    <span>---</span>
+                    <div class="bc-caret group">
+                        <i class="fas fa-caret-down group-hover:text-white"></i>
+                        <div class="dropdown">
+                            {% for opt in pending_options %}
+                                <div onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{ (sid_path + '/' + opt).strip('/') }}&mode={{mode}}'">
+                                    <i class="fas fa-folder text-[8px] mr-2 opacity-50"></i> {{ opt }}
+                                </div>
+                            {% endfor %}
+                            {% if is_sa %}
+                                <div class="text-green-500 font-bold border-t border-gray-800" onclick="openPanel('sub', '{{ sid_path }}')">
+                                    <i class="fas fa-plus-circle mr-2"></i> NEW NUCLEUS
+                                </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     {% endif %}
     {% endif %}
 
     <div class="ml-6 flex items-center gap-2">
+        <span class="symbol-btn" onclick="socket.emit('test_trigger', {})" title="Test Notification"><i class="fas fa-bell text-yellow-500"></i></span>
         <span class="symbol-btn">:::</span>
         <span class="symbol-btn" onclick="window.history.back()">&lt;&lt;</span>
         <div class="flex gap-1 mx-1 items-center">
@@ -863,4 +930,6 @@ def delete_dna():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)})
 
-if __name__ == '__main__': app.run(port=5001)
+if __name__ == '__main__':
+    # Chạy trực tiếp bằng Flask thay vì eventlet để tránh xung đột
+    socketio.run(app, host='127.0.0.1', port=5001, debug=True, allow_unsafe_werkzeug=True)
