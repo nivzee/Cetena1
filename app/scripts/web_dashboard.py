@@ -9,6 +9,8 @@ try:
 except: pass
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'cetena_secret'
+# Bỏ async_mode='threading' để Socket.IO tự chọn eventlet cho ổn định
 socketio = SocketIO(app, cors_allowed_origins="*")
 
 @socketio.on('connect')
@@ -18,8 +20,8 @@ def handle_connect():
 @socketio.on('dna_event')
 def handle_dna_event(data):
     print(f"!!! RECEIVED FROM WATCHDOG: {data}")
-    # Thêm broadcast=True để đảm bảo gửi tới tất cả trình duyệt
-    socketio.emit('dashboard_notify', data, broadcast=True)
+    # socketio.emit mặc định sẽ gửi tới tất cả các trình duyệt đang mở
+    socketio.emit('dashboard_notify', data)
 
 @socketio.on('test_trigger')
 def handle_test(data):
@@ -313,24 +315,63 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 <!-- NOTIFICATION TOAST -->
 <div id="toast-container" class="fixed top-5 right-5 z-[2000] space-y-2"></div>
 
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
 <script>
-    const socket = io({transports: ['polling', 'websocket']});
-    socket.on('connect', () => {
-        console.log("Connected to Cet Core");
+    // Tự động nhận diện địa chỉ server đang chạy
+    const socket = io(window.location.origin, {
+        transports: ['websocket', 'polling'],
+        upgrade: true,
+        reconnection: true
     });
+
+    socket.on('connect', () => {
+        console.log("✅ Connected to Cet Core");
+        showToast("System Connected! 🚀");
+    });
+
+    socket.on('connect_error', (err) => {
+        console.error("❌ Connection Error:", err);
+    });
+
     socket.on('dashboard_notify', function(data) {
-        console.log("Event Received:", data);
-        showToast(data.message);
+        console.log("🔔 Event Received:", data);
+        if (data && data.message) {
+            showToast(data.message);
+            // Hiệu ứng đổi màu nền trang web chớp nhoáng để chú biết chắc chắn là có tin
+            document.body.style.backgroundColor = '#051505';
+            setTimeout(() => { document.body.style.backgroundColor = '#080808'; }, 500);
+        }
     });
 
     function showToast(msg) {
         const container = document.getElementById('toast-container');
+        if (!container) return;
+
         const toast = document.createElement('div');
-        toast.className = "bg-green-900 border border-green-500 text-white text-[10px] px-4 py-2 rounded shadow-lg animate-bounce";
-        toast.innerHTML = `<i class="fas fa-dog mr-2"></i> ${msg}`;
+        // Làm Toast to hơn và có hiệu ứng đổ bóng mạnh
+        toast.className = "bg-green-600 text-white text-[14px] px-8 py-5 rounded-lg shadow-[0_0_50px_rgba(0,255,0,0.6)] animate-bounce flex items-center gap-5 min-w-[350px] border-2 border-white";
+        toast.style.position = "fixed";
+        toast.style.top = "20px";
+        toast.style.right = "20px";
+        toast.style.zIndex = "99999";
+
+        toast.innerHTML = `
+            <i class="fas fa-bell-on fa-spin text-2xl"></i>
+            <div class="flex flex-col">
+                <span class="font-black text-white uppercase text-[12px] tracking-widest">🚨 DNA ALERT</span>
+                <span class="font-bold">${msg}</span>
+            </div>
+        `;
+
         container.appendChild(toast);
-        setTimeout(() => toast.remove(), 5000);
+        console.log("Toast should be visible now!");
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateX(100px)';
+            toast.style.transition = 'all 0.8s';
+            setTimeout(() => toast.remove(), 800);
+        }, 6000);
     }
 </script>
 <!-- DEBUG INFO (Hidden unless SA) -->
@@ -549,7 +590,7 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
     {% endif %}
 
     <div class="ml-6 flex items-center gap-2">
-        <span class="symbol-btn" onclick="socket.emit('test_trigger', {})" title="Test Notification"><i class="fas fa-bell text-yellow-500"></i></span>
+        <span class="symbol-btn" onclick="console.log('🔔 Sending test...'); socket.emit('test_trigger', {test: true})" title="Test Notification"><i class="fas fa-bell text-yellow-500"></i></span>
         <span class="symbol-btn">:::</span>
         <span class="symbol-btn" onclick="window.history.back()">&lt;&lt;</span>
         <div class="flex gap-1 mx-1 items-center">

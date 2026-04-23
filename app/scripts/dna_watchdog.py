@@ -8,10 +8,10 @@ sio = socketio.Client()
 def connect_to_server():
     if not sio.connected:
         try:
-            sio.connect('http://127.0.0.1:5001', transports=['polling'])
+            # Ưu tiên websocket để truyền tin nhanh nhất
+            sio.connect('http://127.0.0.1:5001', transports=['websocket', 'polling'])
             print("✅ [CONNECT] Connected to Dashboard Server")
         except Exception as e:
-            # print(f"❌ [CONNECT] Failed: {e}")
             pass
 
 class DNAHandler(FileSystemEventHandler):
@@ -26,6 +26,10 @@ class DNAHandler(FileSystemEventHandler):
     def on_created(self, event):
         if not event.is_directory:
             self.debounce_process(event.src_path, "CREATED")
+
+    def on_moved(self, event):
+        if not event.is_directory:
+            self.debounce_process(event.dest_path, "MOVED")
 
     def debounce_process(self, filepath, event_type):
         now = time.time()
@@ -43,30 +47,47 @@ class DNAHandler(FileSystemEventHandler):
         rel_path = os.path.relpath(filepath, self.watch_path)
         parts = rel_path.split(os.sep)
 
-        # Log để debug đường dẫn
-        # print(f"DEBUG: Processing {rel_path} | Parts: {parts}")
+        # Log event to file for debugging
+        with open("/home/c/AndroidStudioProjects/Cet/dna_watchdog.log", "a") as f:
+            f.write(f"{time.strftime('%H:%M:%S')} - 🔍 [DEBUG] Checking: {rel_path}\n")
 
         if len(parts) >= 2:
             # Nếu file nằm trong app/ENTITY/DOMAIN/... (không phải scripts)
             if parts[0] != 'scripts':
-                if 'DNA' not in parts and filename.lower().endswith(('.csv', '.xlsx', '.xls')):
-                    msg = f"New Data: {filename} in {parts[0]}"
+                # Kiểm tra Data File
+                if 'DNA' not in parts and filename.lower().endswith(('.csv', '.xlsx', '.xls', '.txt')):
+                    folder_path = "/".join(parts[:-1])
+                    msg = f"New Data: {filename} in {folder_path}"
                     self.notify(msg)
+                # Kiểm tra DNA Script
                 elif 'DNA' in parts and 'Script' in parts and filename.endswith('.py'):
                     msg = f"DNA Logic updated: {filename}"
                     self.notify(msg)
 
     def notify(self, message):
-        print(f"🚀 [NOTIFY] Attempting to send: {message}")
+        log_msg = f"{time.strftime('%H:%M:%S')} - 🚀 [NOTIFY] {message}"
+        print(log_msg)
+        with open("/home/c/AndroidStudioProjects/Cet/dna_watchdog.log", "a") as f:
+            f.write(log_msg + "\n")
+
         connect_to_server()
         if sio.connected:
             try:
                 sio.emit('dna_event', {'message': message})
-                print(f"✨ [SUCCESS] Sent to UI")
+                success_msg = f"{time.strftime('%H:%M:%S')} - ✨ [SUCCESS] Sent to UI"
+                print(success_msg)
+                with open("/home/c/AndroidStudioProjects/Cet/dna_watchdog.log", "a") as f:
+                    f.write(success_msg + "\n")
             except Exception as e:
-                print(f"❌ [ERROR] Send failed: {e}")
+                err_msg = f"{time.strftime('%H:%M:%S')} - ❌ [ERROR] Send failed: {e}"
+                print(err_msg)
+                with open("/home/c/AndroidStudioProjects/Cet/dna_watchdog.log", "a") as f:
+                    f.write(err_msg + "\n")
         else:
-            print(f"⚠️ [OFFLINE] Server not reached. Message cached.")
+            off_msg = f"{time.strftime('%H:%M:%S')} - ⚠️ [OFFLINE] Server not reached."
+            print(off_msg)
+            with open("/home/c/AndroidStudioProjects/Cet/dna_watchdog.log", "a") as f:
+                f.write(off_msg + "\n")
 
 if __name__ == "__main__":
     # Đảm bảo đường dẫn này trỏ đúng vào thư mục 'app' của project
