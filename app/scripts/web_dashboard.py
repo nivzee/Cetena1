@@ -393,7 +393,7 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
         <div class="bc-main">
             <span class="bc-text" style="color:#aaa">{{ user.username }}</span>
             {% set next_mode = 'dna' if mode == 'data' else 'data' %}
-            <span class="bc-text mx-2 font-black transition-all duration-300"
+            <span class="bc-text mx-2 font-black transition-all duration-300 normal-case"
                   style="color: {{ '#00ff00' if mode == 'dna' else '#555' }}; text-shadow: {{ '0 0 10px #00ff00' if mode == 'dna' else 'none' }}; cursor:pointer;"
                   onclick="location.href='/?u={{user.username}}&eid={{eid}}&did={{did}}&sid={{sid_path}}&mode={{next_mode}}'"
                   title="Toggle DNA Mode">
