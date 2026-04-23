@@ -46,14 +46,17 @@ def index():
     # 1. Entities
     entities = query_db("SELECT id, name, code FROM entities ORDER BY id")
     eid = request.args.get('eid')
+    if eid == 'None' or eid == '': eid = None
     if not eid and entities: eid = str(entities[0]['id'])
     curr_ent = next((e for e in entities if str(e['id']) == str(eid)), {}) if eid else {}
     ent_code = curr_ent.get('code', '')
 
     # 2. Domains
     domains = []
-    if eid: domains = query_db("SELECT d.id, d.name, d.code FROM domains d JOIN dna_kernel k ON d.id = k.domain_id WHERE k.entity_id = %s ORDER BY d.id", [eid])
+    if eid and str(eid).isdigit():
+        domains = query_db("SELECT d.id, d.name, d.code FROM domains d JOIN dna_kernel k ON d.id = k.domain_id WHERE k.entity_id = %s ORDER BY d.id", [eid])
     did = request.args.get('did')
+    if did == 'None' or did == '': did = None
     if not did and domains: did = str(domains[0]['id'])
     curr_dom = next((d for d in domains if str(d['id']) == str(did)), {}) if did else {}
     dom_code = curr_dom.get('code', '')
@@ -68,7 +71,7 @@ def index():
     curr_id = None
     base_path = f"app/{ent_code}/{dom_code}" if ent_code and dom_code else "app"
 
-    if eid and did:
+    if eid and did and str(eid).isdigit() and str(did).isdigit():
         e_int, d_int = int(eid), int(did)
         # 1. ĐỒNG BỘ QUÉT Ổ ĐĨA VÀO DATABASE (Đã sửa lỗi Commit)
         def sync_disk_to_db(path, p_id=None):
