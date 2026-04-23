@@ -319,7 +319,7 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 .overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.9); z-index:999; }
 .hidden { display: none !important; }
 </style></head>
-<body class="p-10">
+<body class="px-10 pb-10 pt-0">
 <!-- NOTIFICATION TOAST -->
 <div id="toast-container" class="fixed top-5 right-5 z-[2000] space-y-2"></div>
 <div id="factory-panel">
@@ -386,7 +386,7 @@ body { font-family: 'JetBrains Mono', monospace; background: #080808; color: #ee
 <div class="overlay" onclick="closePanel(); closeShortcut(); closeSettings();"></div>
 
 <!-- BREADCRUMB -->
-<div class="flex justify-between border-b border-gray-800 pb-5 mb-10">
+<div class="flex justify-between border-b border-gray-800 h-12 mb-10 items-center">
 <div class="flex items-center text-[12px] uppercase tracking-tight">
     <!-- ENTITY -->
     <div class="bc-item">
